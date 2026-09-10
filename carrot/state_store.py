@@ -18,7 +18,7 @@ class StateStore:
         try:
             parent = os.path.dirname(self.path) or "."
             dest = os.path.join(parent,
-                                f"quarantine-{int(time.time())}.json")
+                                f"quarantine-state-{int(time.time())}.json")
             os.replace(self.path, dest)
         except OSError:
             pass

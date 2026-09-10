@@ -47,7 +47,7 @@ def test_corrupt_file_quarantined_then_fresh(tmp_path):
     loaded = StateStore(str(p)).load()
     assert loaded.to_dict() == EmotionState().to_dict()
     assert not p.exists()
-    assert len(list(tmp_path.glob("quarantine-*.json"))) == 1
+    assert len(list(tmp_path.glob("quarantine-state-*.json"))) == 1
 
 
 def test_invalid_schema_quarantined_then_fresh(tmp_path):
@@ -56,7 +56,7 @@ def test_invalid_schema_quarantined_then_fresh(tmp_path):
                  encoding="utf-8")
     loaded = StateStore(str(p)).load()
     assert loaded.to_dict() == EmotionState().to_dict()
-    assert len(list(tmp_path.glob("quarantine-*.json"))) == 1
+    assert len(list(tmp_path.glob("quarantine-state-*.json"))) == 1
 
 
 def test_mood_derivation():
