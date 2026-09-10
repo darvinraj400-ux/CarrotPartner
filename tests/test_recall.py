@@ -161,3 +161,20 @@ def test_recall_and_refresh_idempotent_same_now(tmp_path):
     second = store.recall_and_refresh("dog", (), now)
     assert [m.to_dict() for m in second] == [m.to_dict() for m in first]
     assert [m.to_dict() for m in store.load()] == after_first
+
+
+def test_recall_golden_baseline_default_args():
+    # Golden baseline: pins the default-args ranking so the Phase 1
+    # boost_text diff is reviewable. Scores: A = 2*2 + 1*1 + 0.2 = 5.2,
+    # C = 2*1 + 1*0 + 0.1 = 2.1, B = 0 + 0 + 0.9 = 0.9. No ties.
+    mems = [
+        _mem("my dog rex rules the park", importance=0.2, created=100.0),
+        _mem("i love pizza", importance=0.9, created=200.0),
+        _mem("rex likes bones", importance=0.1, created=300.0),
+    ]
+    got = recall(mems, "my dog rex is funny", ("park",))
+    assert [m.text for m in got] == [
+        "my dog rex rules the park",
+        "rex likes bones",
+        "i love pizza",
+    ]

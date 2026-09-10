@@ -971,3 +971,36 @@ def test_initiative_system_prompt_is_clean():
         for word in _STATE_NAMES:
             assert re.search(rf"\b{word}\b", lowered) is None, \
                 (reason, word)
+
+
+# Slice 10 pre-emptive boundary: no new persistent stores. Fusion is
+# recomputed each turn from existing primitives; persisting a fusion
+# signal would create a second source of truth that rots.
+_ALLOWED_JSON_BASENAMES = frozenset({
+    "state.json", "memories.json", "drives.json", "permissions.json",
+    "initiative.json", "appraisal.json", "behavior.json", "decay.json",
+    "environment.json", "personality.json", "tools.json",
+})
+
+
+def _json_basename_literals(tree):
+    """Every string literal ending in .json, reduced to its basename,
+    excluding the bare ".json" fragments of quarantine f-strings."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and node.value.endswith(".json"):
+            base = node.value.replace("\\", "/").rsplit("/", 1)[-1]
+            if base != ".json":
+                found.append(base)
+    return found
+
+
+def test_no_new_state_files():
+    offenders = []
+    for path in (ROOT / "carrot").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for name in _json_basename_literals(tree):
+            if name not in _ALLOWED_JSON_BASENAMES:
+                offenders.append((path.name, name))
+    assert offenders == []

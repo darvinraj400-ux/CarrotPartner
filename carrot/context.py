@@ -99,6 +99,10 @@ def _has_any(haystack: str, cues) -> bool:
 
 # ConversationContext is ephemeral per-turn state. Environment observations
 # (Slice 6) are a sibling value type with the same lifetime, never persisted.
+# ConversationContext is closed to new fields in Slice 10. Rich context
+# fusion is achieved by boosting memory recall (see memory.recall's
+# boost_text parameter) rather than by widening this type. See Slice 10
+# plan for the rationale.
 @dataclass(frozen=True)
 class ConversationContext:
     turns: tuple = ()
