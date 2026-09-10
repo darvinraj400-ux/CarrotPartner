@@ -80,7 +80,9 @@ def test_no_behavior_change_from_drives(tmp_path):
 
 
 def test_no_prompt_change_from_drives(tmp_path):
-    high = _seeded_store(tmp_path, 0.9, 0.9, "high.json")
+    # Below pull_threshold (0.6): the wiring itself adds no prompt content.
+    # Pull rendering is a deliberate Phase 4 feature, pinned separately.
+    high = _seeded_store(tmp_path, 0.2, 0.2, "high.json")
     low = _seeded_store(tmp_path, 0.0, 0.0, "low.json")
     a = make_carrot(drive_store=high)
     b = make_carrot(drive_store=low)

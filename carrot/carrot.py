@@ -26,6 +26,13 @@ from .memory import DeterministicExtractor, Memory, MemoryStore
 _BAND_WORDS = {"low": "a little", "med": "clearly", "high": "strongly"}
 _MEMORY_RENDER_CHARS = 120
 
+# Drive-pull sentences: static strings only, never parameterized by
+# drive values (no numbers may enter the prompt through this path).
+_DRIVE_PULL_SENTENCES = {
+    "social": "You've been wanting to talk to them.",
+    "novelty": "You've been wanting something new to happen.",
+}
+
 # Mirrors cli.py: StateStore lives at <project>/state/state.json, so the
 # default memory file lives next to it. Tests and callers pass an
 # explicit store instead.
@@ -55,7 +62,8 @@ def _memories_block(recalled) -> str:
     return " Memories: " + " ".join(parts)
 
 
-def _context_hint(context: ConversationContext, user_text: str) -> str:
+def _context_hint(context: ConversationContext, user_text: str,
+                  drive_pull=None) -> str:
     lowered = str(user_text or "").strip().lower()
     answered = (bool(lowered) and not lowered.endswith("?")
                 and not _has_cue(lowered, _REPAIR_CUES)
@@ -70,6 +78,9 @@ def _context_hint(context: ConversationContext, user_text: str) -> str:
                      "they said.")
     if context.recent_topics:
         parts.append("Recent topics: " + ", ".join(context.recent_topics))
+    sentence = _DRIVE_PULL_SENTENCES.get(drive_pull)
+    if sentence is not None:
+        parts.append(sentence)
     if not parts:
         return ""
     return " Context: " + " ".join(parts)
@@ -115,7 +126,7 @@ class Carrot:
     def _system_prompt(self, behavior: Behavior,
                          context: ConversationContext,
                          user_text: str,
-                         recalled=()) -> str:
+                         recalled=(), drive_pull=None) -> str:
         degree = _BAND_WORDS.get(behavior.band, "a little")
         return (
             f"{self.personality.sketch()} "
@@ -125,7 +136,7 @@ class Carrot:
             "and natural, like a person texting. Mirror the user's language "
             "and emoji naturally; do not force emoji."
             + _memories_block(recalled)
-            + _context_hint(context, user_text)
+            + _context_hint(context, user_text, drive_pull)
         )
 
     @staticmethod
@@ -217,7 +228,8 @@ class Carrot:
 
         # 6. LLM renders wording only. Its output never re-enters state.
         reply = self.llm.generate(
-            system=self._system_prompt(behavior, ctx, str(text), recalled),
+            system=self._system_prompt(behavior, ctx, str(text), recalled,
+                                       drive_pull=self.last_drive_pull),
             history=self.buffer.history_for_llm(),
             user=str(text))
 

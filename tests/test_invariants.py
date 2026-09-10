@@ -6,6 +6,18 @@ from pathlib import Path
 
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
+from carrot.drives import DriveState, DriveStore
+
+
+def _seeded_drives(tmp_path, social, novelty, name="d.json"):
+    store = DriveStore(tmp_path / name)
+    store.save(DriveState(social=social, novelty=novelty))
+    return store
+
+
+def _drive_carrot(tmp_path, social, novelty, name="d.json"):
+    return make_carrot(
+        drive_store=_seeded_drives(tmp_path, social, novelty, name))
 
 
 def test_runtime_is_stdlib_only():
@@ -193,6 +205,87 @@ def test_no_state_names_in_system():
     # "emotions" ("how your emotions work"); only specific state names
     # above are forbidden. Likewise "playful"/"warm" adjectives live in
     # the personality sketch by design; only noun trait names are barred.
+
+
+def _skeleton(system):
+    return re.sub(r'"[^"]*"', "", system)
+
+
+def test_drive_sentence_present_social(tmp_path):
+    c = _drive_carrot(tmp_path, 0.9, 0.0)
+    c.process_turn("hello there")
+    assert c.last_drive_pull == "social"
+    assert "You've been wanting to talk to them." in c.llm.last_system
+
+
+def test_drive_sentence_present_novelty(tmp_path):
+    c = _drive_carrot(tmp_path, 0.0, 0.9)
+    c.process_turn("hello there")
+    assert c.last_drive_pull == "novelty"
+    assert "You've been wanting something new to happen." \
+        in c.llm.last_system
+
+
+def test_drive_sentence_absent_no_pull(tmp_path):
+    c = _drive_carrot(tmp_path, 0.0, 0.0)
+    c.process_turn("12345 !!!")
+    assert c.last_drive_pull is None
+    assert "You've been wanting to talk to them." not in c.llm.last_system
+    assert "You've been wanting something new to happen." \
+        not in c.llm.last_system
+
+
+def test_drive_sentence_appended_last(tmp_path):
+    c = _drive_carrot(tmp_path, 0.9, 0.0)
+    c.process_turn("lol that was funny")
+    c.clock.advance(5)
+    c.process_turn("are you awake?")
+    c.clock.advance(5)
+    c.process_turn("yes, I'm here")
+    system = c.llm.last_system
+    assert "Recent topics:" in system
+    assert system.index("You've been wanting to talk to them.") > \
+        system.index("Recent topics:")
+
+
+def test_drive_only_block_no_double_space(tmp_path):
+    c = _drive_carrot(tmp_path, 0.9, 0.0)
+    c.process_turn("12345 !!!")
+    system = c.llm.last_system
+    assert system.endswith("Context: You've been wanting to talk to them.")
+    assert "  " not in system
+
+
+def test_drive_sentence_skeleton_clean(tmp_path):
+    c = _drive_carrot(tmp_path, 0.9, 0.9)
+    c.process_turn("hello there")
+    skeleton = _skeleton(c.llm.last_system)
+    assert re.search(r"\d", skeleton) is None
+    lowered = skeleton.lower()
+    for word in ["happiness", "sadness", "anger", "hurt", "affection",
+                 "excitement", "embarrassment", "content", "low",
+                 "tender", "tense", "bright", "sensitivity", "playfulness",
+                 "stoicism", "shyness", "pride", "warmth", "mood"]:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_drive_sentence_adversarial_max(tmp_path):
+    c = _drive_carrot(tmp_path, 1.0, 1.0)
+    c.process_turn("hello there")
+    # Presence satisfaction (-0.01 social) breaks the tie toward novelty;
+    # either way the sentence is a static string carrying no data.
+    assert c.last_drive_pull == "novelty"
+    assert "You've been wanting something new to happen." \
+        in c.llm.last_system
+    assert re.search(r"\d", _skeleton(c.llm.last_system)) is None
+
+
+def test_drive_prompt_deterministic(tmp_path):
+    first = _drive_carrot(tmp_path, 0.9, 0.2, "a.json")
+    second = _drive_carrot(tmp_path, 0.9, 0.2, "b.json")
+    first.process_turn("hello there")
+    second.process_turn("hello there")
+    assert first.llm.last_system == second.llm.last_system
 
 
 def test_extreme_sketch_passes_leakage():
