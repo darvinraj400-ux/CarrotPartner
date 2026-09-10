@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 from .memory import MAX_MEMORY_TEXT_CHARS, Memory
@@ -88,7 +89,7 @@ def _load_json(name: str) -> dict:
         return json.load(fh)
 
 
-def build_carrot(llm=None):
+def build_carrot(llm=None, time_fn=None):
     from .appraisal import Appraisal
     from .behavior import BehaviorSelector
     from .carrot import Carrot
@@ -101,6 +102,13 @@ def build_carrot(llm=None):
 
     store = StateStore(str(ROOT / "state" / "state.json"))
     state = store.load()
+    # Session accounting: count the launch and stamp first contact.
+    # last_seen is deliberately untouched so decay/return logic is
+    # unaffected by launching.
+    state.session_count += 1
+    if state.first_seen_ts == 0.0:
+        state.first_seen_ts = (time_fn or time.time)()
+    store.save(state)
     personality = Personality.load(str(ROOT / "config" / "personality.json"))
     carrot = Carrot(
         state=state,

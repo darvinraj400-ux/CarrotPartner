@@ -74,3 +74,34 @@ def test_mood_hysteresis_keeps_background_state():
     assert derive({"sadness": 0.52}, "content") == "content"
     # Clearly recovered: returns to content.
     assert derive({"sadness": 0.1, "hurt": 0.05}, "low") == "content"
+
+
+def test_session_counters_default():
+    state = EmotionState()
+    assert state.session_count == 0
+    assert state.first_seen_ts == 0.0
+
+
+def test_session_counters_round_trip():
+    state = EmotionState(session_count=7, first_seen_ts=1234.5)
+    assert EmotionState.from_dict(state.to_dict()).to_dict() == \
+        state.to_dict()
+
+
+def test_old_schema_load_defaults():
+    state = EmotionState.from_dict({"version": 1,
+                                    "emotions": {"hurt": 0.6}})
+    assert (state.session_count, state.first_seen_ts) == (0, 0.0)
+
+
+def test_negative_session_count_falls_back():
+    assert EmotionState(session_count=-3).session_count == 0
+    assert EmotionState.from_dict({"session_count": -3}).session_count == 0
+
+
+def test_nonint_session_count_falls_back():
+    assert EmotionState(session_count="7").session_count == 0
+
+
+def test_non_numeric_first_seen_falls_back():
+    assert EmotionState(first_seen_ts="yesterday").first_seen_ts == 0.0

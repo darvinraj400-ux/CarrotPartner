@@ -5,6 +5,7 @@ from carrot.cli import (
     HELP_TEXT,
     NO_CONTEXT_YET,
     NO_MEMORIES_YET,
+    build_carrot,
     format_ctx,
     format_mem_debug,
     format_memories,
@@ -14,6 +15,7 @@ from carrot.cli import (
 )
 from carrot.context import derive_context
 from carrot.memory import MAX_MEMORIES, Memory, MemoryStore
+from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
 
 
@@ -73,6 +75,44 @@ def test_help_lists_ctx():
     assert "/ctx" in HELP_TEXT
     assert "/dbg" in HELP_TEXT
     assert "/quit" in HELP_TEXT
+
+
+def _staged_root(tmp_path, monkeypatch):
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / "state").mkdir(exist_ok=True)
+    for name in ("personality.json", "appraisal.json", "behavior.json",
+                 "decay.json"):
+        shutil.copy(ROOT / "config" / name, tmp_path / "config" / name)
+    monkeypatch.setattr("carrot.cli.ROOT", tmp_path)
+    return tmp_path
+
+
+def test_launch_increments_session_count(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    assert build_carrot().state.session_count == 1
+
+
+def test_launch_again_increments(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    build_carrot()
+    assert build_carrot().state.session_count == 2
+
+
+def test_first_seen_set_once(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    assert build_carrot(time_fn=lambda: 1000.0).state.first_seen_ts == 1000.0
+    assert build_carrot(time_fn=lambda: 2000.0).state.first_seen_ts == 1000.0
+
+
+def test_last_seen_untouched_by_launch(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    first = build_carrot(time_fn=lambda: 1000.0)
+    first.process_turn("hello there")
+    first.store.save(first.state)
+    seen = first.state.last_seen
+    relaunched = build_carrot(time_fn=lambda: 9999.0)
+    assert relaunched.state.last_seen == seen
+    assert relaunched.state.session_count == 2
 
 
 def _seed(carrot, *texts):
@@ -225,3 +265,43 @@ def test_cli_memory_round_trip(tmp_path):
     assert "[fact] my dog is a corgi" in format_memories(c.memory_store)
     assert handle_forget(c, "corgi") == "forgot 1"
     assert format_memories(c.memory_store) == NO_MEMORIES_YET
+
+
+def _staged_root(tmp_path, monkeypatch):
+    import shutil
+
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / "state").mkdir(exist_ok=True)
+    for name in ("personality.json", "appraisal.json", "behavior.json",
+                 "decay.json"):
+        shutil.copy(ROOT / "config" / name, tmp_path / "config" / name)
+    monkeypatch.setattr("carrot.cli.ROOT", tmp_path)
+    return tmp_path
+
+
+def test_launch_increments_session_count(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    assert build_carrot().state.session_count == 1
+
+
+def test_launch_again_increments(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    build_carrot()
+    assert build_carrot().state.session_count == 2
+
+
+def test_first_seen_set_once(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    assert build_carrot(time_fn=lambda: 1000.0).state.first_seen_ts == 1000.0
+    assert build_carrot(time_fn=lambda: 2000.0).state.first_seen_ts == 1000.0
+
+
+def test_last_seen_untouched_by_launch(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    first = build_carrot(time_fn=lambda: 1000.0)
+    first.process_turn("hello there")
+    first.store.save(first.state)
+    seen = first.state.last_seen
+    relaunched = build_carrot(time_fn=lambda: 9999.0)
+    assert relaunched.state.last_seen == seen
+    assert relaunched.state.session_count == 2

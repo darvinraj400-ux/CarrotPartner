@@ -50,7 +50,8 @@ class EmotionState:
                  mood: str = "content", last_seen: float = 0.0,
                  recent_causes=None,
                  personality_id: str = "carrot-default-v1",
-                 version: int = STATE_VERSION):
+                 version: int = STATE_VERSION,
+                 session_count: int = 0, first_seen_ts: float = 0.0):
         self._emotions = dict(RESTING)
         if emotions:
             for key, value in emotions.items():
@@ -65,6 +66,16 @@ class EmotionState:
             self._push_cause(cause)
         self.personality_id = str(personality_id)
         self.version = int(version)
+        if (isinstance(session_count, bool)
+                or not isinstance(session_count, int)
+                or session_count < 0):
+            session_count = 0
+        self.session_count = session_count
+        try:
+            first_seen_ts = float(first_seen_ts)
+        except (TypeError, ValueError):
+            first_seen_ts = 0.0
+        self.first_seen_ts = first_seen_ts
 
     @property
     def emotions(self) -> dict:
@@ -164,6 +175,8 @@ class EmotionState:
             "mood": self._mood,
             "last_seen": self._last_seen,
             "recent_causes": list(self._recent_causes),
+            "session_count": self.session_count,
+            "first_seen_ts": self.first_seen_ts,
         }
 
     @classmethod
@@ -184,4 +197,6 @@ class EmotionState:
             recent_causes=data.get("recent_causes", []),
             personality_id=data.get("personality_id", "carrot-default-v1"),
             version=data.get("version", STATE_VERSION),
+            session_count=data.get("session_count", 0),
+            first_seen_ts=data.get("first_seen_ts", 0.0),
         )
