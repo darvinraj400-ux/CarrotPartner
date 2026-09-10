@@ -8,6 +8,31 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
+             "/quit exit")
+NO_CONTEXT_YET = "(no context yet)"
+
+
+def format_ctx(ctx) -> str:
+    """Render a ConversationContext as text. Reads only, no floats."""
+    lines = [
+        f"  pending_question: {ctx.pending_question}",
+        f"  playful_frame: {ctx.playful_frame}",
+        f"  recent_harshness: {ctx.recent_harshness}",
+        f"  recent_topics: [{', '.join(ctx.recent_topics)}]",
+        f"  turns: {len(ctx.turns)}",
+    ]
+    for turn in list(ctx.turns)[-3:]:
+        lines.append(f"    {turn.role}: {turn.text}")
+    return "\n".join(lines)
+
+
+def handle_ctx(carrot) -> str:
+    """Return /ctx output without touching state, buffer, or disk."""
+    if carrot.last_context is None:
+        return NO_CONTEXT_YET
+    return format_ctx(carrot.last_context)
+
 
 def _load_json(name: str) -> dict:
     with open(ROOT / "config" / name, "r", encoding="utf-8") as fh:
@@ -69,7 +94,10 @@ def main() -> None:
                 print(f"    {k}={v:.2f}")
             continue
         if line.strip() == "/help":
-            print("  /dbg inner state (dev only) | /quit exit")
+            print(HELP_TEXT)
+            continue
+        if line.strip() == "/ctx":
+            print(handle_ctx(carrot))
             continue
         reply = carrot.process_turn(line)
         carrot.store.save(carrot.state)

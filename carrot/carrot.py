@@ -57,6 +57,7 @@ class Carrot:
         self._now = time_fn or time.time
         self.last_behavior: Behavior = Behavior("normal", "low")
         self.last_event: InteractionEvent | None = None
+        self.last_context = None
         if buffer is None:
             from .conversation import ConversationBuffer
             buffer = ConversationBuffer()
@@ -97,6 +98,7 @@ class Carrot:
 
         # 3. Interpret the live message with pre-turn context flags.
         ctx = derive_context(self.buffer.recent())
+        self.last_context = ctx
         event = self.classifier.classify(text, ctx)
         self.last_event = event
 
