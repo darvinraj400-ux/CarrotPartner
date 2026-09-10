@@ -248,3 +248,50 @@ def test_patience_default_is_neutral():
         assert sel.pick(state, Personality(),
                         _blank(), "").name == sel.pick(
             state, Personality(patience=0.5), _blank(), "").name
+
+
+def _proud_state(event, happiness=0.6):
+    return EmotionState(emotions={"happiness": happiness},
+                        recent_causes=[{"event": event}])
+
+
+def test_proud_default_pride_achievement():
+    sel = BehaviorSelector({})
+    assert sel.pick(_proud_state("achievement"), Personality(pride=0.4),
+                    _blank(), "").name == "proud"
+
+
+def test_proud_default_pride_excludes_joke():
+    sel = BehaviorSelector({})
+    assert sel.pick(_proud_state("joke"), Personality(pride=0.4),
+                    _blank(), "").name == "normal"
+
+
+def test_proud_high_pride_enables_joke():
+    sel = BehaviorSelector({})
+    assert sel.pick(_proud_state("joke"), Personality(pride=0.8),
+                    _blank(), "").name == "proud"
+
+
+def test_proud_high_pride_enables_affection():
+    sel = BehaviorSelector({})
+    assert sel.pick(_proud_state("affection"), Personality(pride=0.8),
+                    _blank(), "").name == "proud"
+
+
+def test_proud_cutoff_boundary_inclusive():
+    sel = BehaviorSelector({})
+    assert sel.pick(_proud_state("joke"), Personality(pride=0.7),
+                    _blank(), "").name == "proud"
+
+
+def test_proud_below_cutoff_uses_base_set():
+    sel = BehaviorSelector({})
+    assert sel.pick(_proud_state("joke"), Personality(pride=0.69),
+                    _blank(), "").name == "normal"
+
+
+def test_proud_happiness_requirement_unchanged():
+    sel = BehaviorSelector({})
+    assert sel.pick(_proud_state("joke", happiness=0.4),
+                    Personality(pride=0.8), _blank(), "").name != "proud"

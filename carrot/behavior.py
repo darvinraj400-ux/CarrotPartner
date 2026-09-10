@@ -35,6 +35,20 @@ BEHAVIORS = ("normal", "playful", "excited", "sad", "annoyed", "sulking",
              "quiet", "shy", "affectionate", "embarrassed", "curious",
              "proud", "frustrated")
 
+# Proud trigger sets: high pride also takes pride in shared jokes and
+# affection, not only achievements and praise.
+PROUD_HIGH_PRIDE_CUTOFF = 0.7
+BASE_PROUD_EVENTS = (
+    "achievement",
+    "compliment",
+)
+PROUD_HIGH_PRIDE_EVENTS = (
+    "achievement",
+    "compliment",
+    "joke",
+    "affection",
+)
+
 
 @dataclass(frozen=True)
 class Behavior:
@@ -136,9 +150,13 @@ class BehaviorSelector:
                 return Behavior("playful", _band(hap))
             return Behavior("excited", _band(hap))
 
-        if (last_event in ("achievement", "compliment")
-                and hap >= t("proud_happiness", 0.45)
-                and personality.pride >= 0.5):
+        allowed_events = (
+            PROUD_HIGH_PRIDE_EVENTS
+            if personality.pride >= PROUD_HIGH_PRIDE_CUTOFF
+            else BASE_PROUD_EVENTS
+        )
+        if (last_event in allowed_events
+                and hap >= t("proud_happiness", 0.45)):
             return Behavior("proud", _band(hap))
 
         if state.energy < t("low_energy", 0.35):
