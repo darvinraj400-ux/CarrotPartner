@@ -1,0 +1,1 @@
+{"long_absence_threshold_s": 21600, "high_social_drive_threshold": 0.6, "cooldowns": {"long-absence": 43200, "high-social-drive": 14400, "session-open": 14400, "user-returned": 7200}}

@@ -173,16 +173,18 @@ def test_initiative_module_is_pure():
             for a in node.names:
                 parts = a.name.split(".")
                 if parts[0] == "carrot" and (
-                        len(parts) < 2 or parts[1] != "drives"):
+                        len(parts) < 2
+                        or parts[1] not in ("drives", "environment")):
                     offenders.append(a.name)
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
             parts = mod.split(".")
             if node.level == 0:
                 if parts[0] == "carrot" and (
-                        len(parts) < 2 or parts[1] != "drives"):
+                        len(parts) < 2
+                        or parts[1] not in ("drives", "environment")):
                     offenders.append(mod)
-            elif mod != "drives":
+            elif mod not in ("drives", "environment"):
                 offenders.append("." + mod if mod else ".")
     assert offenders == []
 
