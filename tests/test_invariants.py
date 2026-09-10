@@ -9,6 +9,8 @@ from tests.test_scenarios import make_carrot
 from carrot.carrot import _TOOLS_BLOCK
 from carrot.drives import DriveState, DriveStore
 from carrot.environment import MockEnvironmentProbe, RawObservation
+from carrot.personality import Personality
+from carrot.tools import ToolRequest, ToolsConfig, decide
 
 
 def _seeded_drives(tmp_path, social, novelty, name="d.json"):
@@ -671,3 +673,192 @@ def test_tools_block_tool_names_digit_free():
     assert "read_file" in _TOOLS_BLOCK
     assert "open_url" in _TOOLS_BLOCK
     assert re.search(r"\d", _TOOLS_BLOCK) is None
+
+
+_BANNED_PERMISSION_WORDS = (
+    "granted", "grant", "denied", "deny",
+    "consent", "policy", "revoke", "permission", "permissions",
+)
+
+
+def _assert_no_permission_words(system):
+    lowered = _skeleton(system).lower()
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def _alt_personality():
+    return Personality.load(
+        str(ROOT / "tests" / "fixtures" / "personality-alt.json"))
+
+
+def test_grant_vocabulary_absent_from_system_prompt(tmp_path):
+    """Slice 8 invariant: the permission layer is LLM-invisible. The LLM
+    learns of a denial only via the tool-result string in the second-call
+    history — never via the system prompt. If a future change adds a
+    "Permissions:" block or a policy sentence to the prompt, this test
+    fails and forces a deliberate planner review."""
+    for personality in (None, _alt_personality()):
+        c = make_carrot(personality=personality)
+        c.process_turn("hello there")
+        _assert_no_permission_words(c.llm.last_system)
+
+        c = make_carrot(personality=personality)
+        c.process_turn("my name is Alice")
+        c.clock.advance(5)
+        c.process_turn("what was my name")
+        _assert_no_permission_words(c.llm.last_system)
+
+        store = DriveStore(tmp_path / "d.json")
+        store.save(DriveState(social=0.9, novelty=0.0))
+        c = make_carrot(personality=personality, drive_store=store)
+        c.process_turn("hello there")
+        _assert_no_permission_words(c.llm.last_system)
+
+        c = make_carrot(personality=personality)
+        c.environment_probe = MockEnvironmentProbe(
+            [RawObservation("cmd.exe", False)])
+        c.process_turn("hello there")
+        _assert_no_permission_words(c.llm.last_system)
+
+        c = make_carrot(personality=personality)
+        c.process_turn("are you awake?")
+        c.clock.advance(5)
+        c.process_turn("yes, I'm here")
+        _assert_no_permission_words(c.llm.last_system)
+
+        c = make_carrot(personality=personality)
+        c.process_turn("you are useless.")
+        c.clock.advance(5)
+        c.process_turn("I'm kidding.")
+        _assert_no_permission_words(c.llm.last_system)
+
+        store = DriveStore(tmp_path / "d2.json")
+        store.save(DriveState(social=0.9, novelty=0.0))
+        c = make_carrot(personality=personality, drive_store=store)
+        c.environment_probe = MockEnvironmentProbe(
+            [RawObservation("cmd.exe", False)])
+        c.process_turn("my name is Alice")
+        c.clock.advance(5)
+        c.process_turn("are you awake?")
+        c.clock.advance(5)
+        c.process_turn("yes, I'm here")
+        c.clock.advance(5)
+        c.process_turn("you are useless.")
+        c.clock.advance(5)
+        c.process_turn("I'm kidding.")
+        c.clock.advance(5)
+        c.process_turn("what was my name")
+        _assert_no_permission_words(c.llm.last_system)
+
+
+_ALLOWED_REASONS = {
+    None,
+    "unknown tool",
+    "disabled",
+    "not permitted",
+    "requires persistent grant",
+    "missing path",
+    "path must be absolute",
+    "path not allowed",
+    "missing url",
+    "unsupported scheme",
+    "invalid url",
+    "domain not allowed",
+}
+
+
+def _reason_cfg(tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir(exist_ok=True)
+    return ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(str(notes),),
+        open_url_domains=("example.com",),
+        max_file_bytes=4096, max_iterations=2,
+        levels={"read_file": 1, "open_url": 2}), notes
+
+
+def test_decide_reason_strings_are_static(tmp_path):
+    """Slice 8 invariant: reason strings are static. No domain, path, tool
+    name, or count is interpolated. Interpolation would be an LLM leak
+    vector (the reason reaches the second-call history text). If a future
+    change adds interpolation, this test fails."""
+    cfg, notes = _reason_cfg(tmp_path)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir(exist_ok=True)
+    cases = [
+        # (request, session, persistent, cfg override or None)
+        (ToolRequest("rm_rf", {}), {}, {}, None),
+        (ToolRequest("read_file", {"path": str(notes / "a.txt")}),
+         {"read_file": True}, {}, {"enabled": {"read_file": False}}),
+        (ToolRequest("read_file", {"path": str(notes / "a.txt")}),
+         {}, {}, None),
+        (ToolRequest("read_file", {"path": str(notes / "a.txt")}),
+         {"read_file": False}, {"read_file": True}, None),
+        (ToolRequest("read_file", {"path": str(notes / "a.txt")}),
+         {"read_file": True}, {}, {"levels": {"read_file": 3}}),
+        (ToolRequest("read_file", {"path": str(notes / "a.txt")}),
+         {}, {"read_file": True}, {"levels": {"read_file": 3}}),
+        (ToolRequest("read_file", {"path": str(notes / "a.txt")}),
+         {"read_file": True}, {}, None),
+        (ToolRequest("open_url", {"url": "https://example.com/"}),
+         {"open_url": True}, {}, None),
+        (ToolRequest("read_file", {}), {"read_file": True}, {}, None),
+        (ToolRequest("read_file", {"path": "notes/a.txt"}),
+         {"read_file": True}, {}, None),
+        (ToolRequest("read_file", {"path": str(outside / "x.txt")}),
+         {"read_file": True}, {}, None),
+        (ToolRequest("open_url", {}), {"open_url": True}, {}, None),
+        (ToolRequest("open_url", {"url": ""}), {"open_url": True}, {},
+         None),
+        (ToolRequest("open_url", {"url": "file:///etc/passwd"}),
+         {"open_url": True}, {}, None),
+        (ToolRequest("open_url", {"url": "http:///x"}),
+         {"open_url": True}, {}, None),
+        (ToolRequest("open_url", {"url": "https://evil.example/"}),
+         {"open_url": True}, {}, None),
+    ]
+    for req, session, persistent, override in cases:
+        use_cfg = cfg
+        if override is not None:
+            use_cfg = ToolsConfig(
+                enabled=override.get("enabled", dict(cfg.enabled)),
+                read_file_dirs=cfg.read_file_dirs,
+                open_url_domains=cfg.open_url_domains,
+                max_file_bytes=cfg.max_file_bytes,
+                max_iterations=cfg.max_iterations,
+                levels=override.get("levels", dict(cfg.levels)))
+        assert decide(req, use_cfg, session,
+                      persistent).reason in _ALLOWED_REASONS, req
+
+
+def test_permissions_module_does_not_import_llm():
+    """Complements test_permissions_module_boundary (Phase 1), which bans
+    a broad project-module list: this pins the LLM-invisibility trio
+    (llm, carrot, cli) explicitly, since cli was absent from that set."""
+    banned = {"llm", "carrot", "cli"}
+    offenders = []
+    tree = ast.parse((ROOT / "carrot" / "permissions.py").read_text(
+        encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if parts[0] in banned or (parts[0] == "carrot"
+                                          and len(parts) > 1):
+                    offenders.append(a.name)
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            parts = mod.split(".")
+            if node.level == 0 and (parts[0] in banned or (
+                    parts[0] == "carrot" and len(parts) > 1)):
+                offenders.append(mod)
+            elif node.level > 0:
+                if parts and parts[0] in banned:
+                    offenders.append(mod)
+                else:
+                    for a in node.names:
+                        if a.name in banned:
+                            offenders.append(a.name)
+    assert offenders == []
