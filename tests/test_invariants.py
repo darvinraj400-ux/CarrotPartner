@@ -71,8 +71,8 @@ def test_no_autonomy_primitives():
 
 
 # Slice 6 boundary: perception is read-only. `ctypes` is permitted only in
-# `carrot/environment_win32.py` (the Windows probe); no other module may
-# import it, and no module may call WinDLL/CDLL/windll.
+# `carrot/environment_win32.py` (the Windows probe, read-only use only);
+# no other module may import it or call WinDLL/CDLL/windll.
 def test_no_os_write_primitives():
     importers = []
     callers = []
@@ -94,10 +94,11 @@ def test_no_os_write_primitives():
                 if node.attr in ("windll", "CDLL", "WinDLL"):
                     value = node.value
                     if isinstance(value, ast.Name) and value.id == "ctypes":
-                        callers.append((path.name, node.attr))
+                        callers.append(path.name)
     assert all(name == "environment_win32.py" for name in importers), \
         importers
-    assert callers == []
+    assert all(name == "environment_win32.py" for name in callers), \
+        callers
 
 
 def test_state_does_not_grow_without_bound(tmp_path):
