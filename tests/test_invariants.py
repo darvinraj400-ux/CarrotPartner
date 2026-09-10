@@ -214,6 +214,38 @@ def test_write_api_ban_has_teeth():
     assert _find_write_calls(good) == []
 
 
+# Slice 8 boundary: blocking input is permitted only in the CLI REPL.
+# Any handler or orchestrator that calls input() would freeze a turn
+# and break deterministic testing. Prompting is injectable-only.
+def test_no_input_outside_cli_main():
+    offenders = []
+    for path in (ROOT / "carrot").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        stack = [(tree, None)]
+        while stack:
+            node, func = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                func = node.name
+            if isinstance(node, ast.Call):
+                called = node.func
+                if isinstance(called, ast.Name) and called.id == "input":
+                    if not (path.name == "cli.py" and func == "main"):
+                        offenders.append((path.name, func))
+            for child in ast.iter_child_nodes(node):
+                stack.append((child, func))
+    assert offenders == []
+
+
+# Slice 8 consent lives in state/permissions.json, never state.json.
+# Pinned before the store exists so a future schema drift is caught
+# immediately.
+def test_consent_not_in_state_json():
+    state = make_carrot().state.to_dict()
+    assert "permissions" not in state
+    assert "grants" not in state
+    assert "consent" not in state
+
+
 def test_state_does_not_grow_without_bound(tmp_path):
     c = make_carrot()
     lines = ["hello there?", "You're cute!", "that joke was funny lol",

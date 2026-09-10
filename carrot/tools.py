@@ -146,6 +146,8 @@ class ToolsConfig:
                    max_file_bytes=max_bytes, max_iterations=max_iter)
 
 
+# Slice 8: signature grows only by defaulted parameters
+# (persistent_grants=None). No breaking changes across phases.
 def decide(
     request: ToolRequest,
     config: ToolsConfig,
