@@ -6,6 +6,7 @@ import sys
 import time
 from pathlib import Path
 
+from .drives import drive_pull
 from .memory import MAX_MEMORY_TEXT_CHARS, Memory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "/quit exit\n"
              "  /memories list memories | /mem memory details (dev only) | "
-             "/remember <text> save memory | /forget <substring> drop matches")
+             "/remember <text> save memory | /forget <substring> drop matches | "
+             "/drives show drives")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
@@ -84,6 +86,36 @@ def handle_forget(carrot, arg: str) -> str:
     return f"forgot {removed}"
 
 
+def _drive_band(level: float, threshold: float) -> str:
+    if level >= threshold:
+        return "high"
+    if level >= 0.3:
+        return "medium"
+    return "low"
+
+
+def format_drives(drive_store, drives_config) -> str:
+    """User-facing drives view. Reads only: labels, no floats."""
+    state = drive_store.load()
+    threshold = drives_config.pull_threshold
+    pull = drive_pull(state, drives_config)
+    return (f"social: {_drive_band(state.social, threshold)} "
+            f"novelty: {_drive_band(state.novelty, threshold)}\n"
+            f"pull: {pull if pull is not None else 'none'}")
+
+
+def format_dbg(carrot) -> str:
+    """Debug inner-state view. Floats permitted (dev surface)."""
+    s = carrot.state
+    lines = [f"  mood={s.mood} energy={s.energy:.2f} "
+             f"behavior={carrot.last_behavior.name}/"
+             f"{carrot.last_behavior.band}"]
+    for k, v in sorted(s.emotions.items()):
+        lines.append(f"    {k}={v:.2f}")
+    drives = carrot.drive_store.load()
+    lines.append(f"  social={drives.social:.2f} novelty={drives.novelty:.2f}")
+    return "\n".join(lines)
+
 def _load_json(name: str) -> dict:
     with open(ROOT / "config" / name, "r", encoding="utf-8") as fh:
         return json.load(fh)
@@ -143,12 +175,7 @@ def main() -> None:
         if line.strip() in ("/quit", "/exit"):
             break
         if line.strip() == "/dbg":
-            s = carrot.state
-            print(f"  mood={s.mood} energy={s.energy:.2f} "
-                  f"behavior={carrot.last_behavior.name}/"
-                  f"{carrot.last_behavior.band}")
-            for k, v in sorted(s.emotions.items()):
-                print(f"    {k}={v:.2f}")
+            print(format_dbg(carrot))
             continue
         if line.strip() == "/help":
             print(HELP_TEXT)
@@ -161,6 +188,9 @@ def main() -> None:
             continue
         if line.strip() == "/mem":
             print(format_mem_debug(carrot.memory_store))
+            continue
+        if line.strip() == "/drives":
+            print(format_drives(carrot.drive_store, carrot.drives_config))
             continue
         if (line.strip() == "/remember"
                 or line.strip().startswith("/remember ")):

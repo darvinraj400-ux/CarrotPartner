@@ -7,6 +7,8 @@ from carrot.cli import (
     NO_MEMORIES_YET,
     build_carrot,
     format_ctx,
+    format_dbg,
+    format_drives,
     format_mem_debug,
     format_memories,
     handle_ctx,
@@ -14,6 +16,7 @@ from carrot.cli import (
     handle_remember,
 )
 from carrot.context import derive_context
+from carrot.drives import DriveState, DriveStore, DrivesConfig
 from carrot.memory import MAX_MEMORIES, Memory, MemoryStore
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
@@ -265,6 +268,102 @@ def test_cli_memory_round_trip(tmp_path):
     assert "[fact] my dog is a corgi" in format_memories(c.memory_store)
     assert handle_forget(c, "corgi") == "forgot 1"
     assert format_memories(c.memory_store) == NO_MEMORIES_YET
+
+
+def _drive_cfg():
+    return DrivesConfig(rise_per_hour={}, pull_threshold=0.6,
+                        presence_satisfaction={}, event_satisfaction={})
+
+
+def _drive_carrot_cli(tmp_path, social=0.0, novelty=0.0):
+    store = DriveStore(tmp_path / "d.json")
+    store.save(DriveState(social=social, novelty=novelty))
+    return make_carrot(drive_store=store)
+
+
+def test_drives_empty(tmp_path):
+    out = format_drives(_drive_carrot_cli(tmp_path).drive_store,
+                        _drive_cfg())
+    assert "social: low" in out
+    assert "novelty: low" in out
+    assert "pull: none" in out
+    assert re.search(r"\d", out) is None
+
+
+def test_drives_high_social(tmp_path):
+    out = format_drives(_drive_carrot_cli(tmp_path, social=0.8).drive_store,
+                        _drive_cfg())
+    assert "social: high" in out
+    assert "pull: social" in out
+
+
+def test_drives_high_novelty(tmp_path):
+    out = format_drives(_drive_carrot_cli(tmp_path, novelty=0.8).drive_store,
+                        _drive_cfg())
+    assert "novelty: high" in out
+    assert "pull: novelty" in out
+
+
+def test_drives_boundary_exact_threshold(tmp_path):
+    out = format_drives(_drive_carrot_cli(tmp_path, social=0.6).drive_store,
+                        _drive_cfg())
+    assert "social: high" in out
+    assert "pull: social" in out
+
+
+def test_drives_medium(tmp_path):
+    out = format_drives(_drive_carrot_cli(tmp_path, social=0.4).drive_store,
+                        _drive_cfg())
+    assert "social: medium" in out
+    assert "pull: none" in out
+
+
+def test_drives_low(tmp_path):
+    out = format_drives(_drive_carrot_cli(tmp_path, social=0.2,
+                                          novelty=0.1).drive_store,
+                        _drive_cfg())
+    assert "social: low" in out
+    assert "novelty: low" in out
+    assert "pull: none" in out
+
+
+def test_drives_no_mutation(tmp_path):
+    c = _drive_carrot_cli(tmp_path, social=0.8, novelty=0.2)
+    path = tmp_path / "d.json"
+    before = c.drive_store.load()
+    mtime = path.stat().st_mtime_ns
+    format_drives(c.drive_store, _drive_cfg())
+    assert c.drive_store.load() == before
+    assert path.stat().st_mtime_ns == mtime
+
+
+def test_drives_no_digits(tmp_path):
+    for social, novelty in ((0.0, 0.0), (0.8, 0.2), (1.0, 1.0)):
+        out = format_drives(
+            _drive_carrot_cli(tmp_path, social, novelty).drive_store,
+            _drive_cfg())
+        assert re.search(r"\d", out) is None, out
+
+
+def test_dbg_includes_drives_floats(tmp_path):
+    c = _drive_carrot_cli(tmp_path, social=0.8, novelty=0.2)
+    c.process_turn("hello there")
+    out = format_dbg(c)
+    assert "social=" in out
+    assert "novelty=" in out
+
+
+def test_dbg_still_shows_existing_content(tmp_path):
+    c = _drive_carrot_cli(tmp_path)
+    c.process_turn("hello there")
+    out = format_dbg(c)
+    assert "mood=" in out
+    assert "behavior=" in out
+    assert "happiness" in out
+
+
+def test_help_lists_drives():
+    assert "/drives" in HELP_TEXT
 
 
 def _staged_root(tmp_path, monkeypatch):
