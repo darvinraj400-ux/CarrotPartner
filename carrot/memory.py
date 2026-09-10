@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Protocol, Sequence
 
 MEMORY_SCHEMA_VERSION = 1
 MAX_MEMORIES = 50
@@ -177,3 +178,83 @@ class MemoryStore:
 
     def all(self) -> tuple:
         return self.load()
+
+
+@dataclass(frozen=True)
+class MemoryCandidate:
+    text: str
+    kind: str
+
+
+class Extractor(Protocol):
+    def extract(self, user_text: str) -> tuple:
+        ...
+
+
+# Coarse turn-level rejection: hostile turns yield zero candidates.
+_HOSTILE_CUES = ("you are useless", "you're useless", "youre useless",
+                 "i hate you", "shut up", "fuck you", "screw you",
+                 "stupid", "idiot", "moron", "dumbass")
+
+# Ordered (pattern, kind). Explicit-memory patterns first, then specific
+# identity patterns, then preferences, then the generic possessive LAST:
+# "my favorite color is blue" must reach the preference rule before the
+# generic "my ... is ..." rule can claim it as a fact. Non-greedy `A`
+# groups keep compound statements narrow ("my dog is funny" -> A="dog").
+_ORDERED_PATTERNS = tuple(
+    (re.compile(pattern), kind)
+    for pattern, kind in [
+        (r"remember (that )?(?P<X>.+)", "fact"),
+        (r"don't forget (that )?(?P<X>.+)", "fact"),
+        (r"note (that )?(?P<X>.+)", "fact"),
+        (r"my name is (?P<X>.+)", "fact"),
+        (r"call me (?P<X>.+)", "fact"),
+        (r"i'?m (?P<X>.+) years old", "fact"),
+        (r"my birthday is (?P<X>.+)", "fact"),
+        (r"i live in (?P<X>.+)", "fact"),
+        (r"i'?m from (?P<X>.+)", "fact"),
+        (r"i work (at|for|as) (?P<X>.+)", "fact"),
+        (r"i have a (?P<X>.+)", "fact"),
+        (r"i'?m allergic to (?P<X>.+)", "fact"),
+        (r"my favorite (?P<A>.+?) is (?P<X>.+)", "preference"),
+        (r"i (really )?(love|like|prefer) (?P<X>.+)", "preference"),
+        (r"i (really )?(hate|dislike) (?P<X>.+)", "preference"),
+        (r"my (?P<A>.+?) is (?P<X>.+)", "fact"),
+    ]
+)
+
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?…;\n]+")
+_TRAILING_PUNCT = ".,!?:;"
+
+
+class DeterministicExtractor:
+    """Rule-based candidate extraction. Pure: no I/O, no state."""
+
+    def extract(self, user_text: str) -> tuple:
+        lowered = str(user_text or "").lower()
+        if not lowered.strip():
+            return ()
+        if any(cue in lowered for cue in _HOSTILE_CUES):
+            return ()
+        found: list = []
+        seen = set()
+        for segment in _SENTENCE_SPLIT_RE.split(lowered):
+            candidate = self._match_segment(segment.strip())
+            if candidate is not None and candidate.text not in seen:
+                seen.add(candidate.text)
+                found.append(candidate)
+        return tuple(found)
+
+    @staticmethod
+    def _match_segment(segment: str):
+        if not segment:
+            return None
+        for pattern, kind in _ORDERED_PATTERNS:
+            match = pattern.search(segment)
+            if not match:
+                continue
+            text = match.group(0).strip().rstrip(_TRAILING_PUNCT).strip()
+            if not text or len(text) > MAX_MEMORY_TEXT_CHARS:
+                return None
+            return MemoryCandidate(text=text, kind=kind)
+        return None
