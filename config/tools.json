@@ -1,0 +1,1 @@
+{"enabled": {"read_file": true, "open_url": true}, "read_file_dirs": [], "open_url_domains": [], "max_file_bytes": 4096, "max_iterations": 2}
