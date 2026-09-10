@@ -14,7 +14,9 @@ def _tool_carrot(tmp_path, replies, max_bytes=4096):
         enabled={"read_file": True, "open_url": True},
         read_file_dirs=(str(tmp_path),),
         open_url_domains=("example.com",),
-        max_file_bytes=max_bytes, max_iterations=2, levels={})
+        max_file_bytes=max_bytes, max_iterations=2,
+        # Explicit levels: Slice 8 makes unlisted tools deny-by-default.
+        levels={"read_file": 1, "open_url": 2})
     calls = {"n": 0, "histories": [], "users": []}
 
     def generate(*, system, history, user):

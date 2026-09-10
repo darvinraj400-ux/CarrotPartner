@@ -515,7 +515,10 @@ def _tool_cli_carrot(tmp_path=None):
         enabled={"read_file": True, "open_url": True},
         read_file_dirs=(str(tmp_path),) if tmp_path is not None else (),
         open_url_domains=("example.com",),
-        max_file_bytes=4096, max_iterations=2, levels={})
+        max_file_bytes=4096, max_iterations=2,
+        # Explicit levels: Slice 8 makes unlisted tools deny-by-default.
+        levels={"read_file": 1, "open_url": 2})
+    return c
     return c
 
 

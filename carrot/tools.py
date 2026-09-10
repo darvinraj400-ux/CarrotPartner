@@ -160,12 +160,17 @@ class ToolsConfig:
                    levels=MappingProxyType(clean_levels))
 
 
+def _level(tool_name: str, config: ToolsConfig) -> int:
+    return config.levels.get(tool_name, 4)
+
+
 # Slice 8: signature grows only by defaulted parameters
 # (persistent_grants=None). No breaking changes across phases.
 def decide(
     request: ToolRequest,
     config: ToolsConfig,
     session_grants: Mapping[str, bool],
+    persistent_grants: Mapping[str, bool] | None = None,
 ) -> Decision:
     """Coarse permission check at the tool-category level, then
     fine-grained argument validation per tool (Phase 3).
@@ -178,9 +183,27 @@ def decide(
         return Decision(False, "unknown tool")
     if config.enabled.get(request.name) is not True:
         return Decision(False, "disabled")
-    grants = session_grants or {}
-    if grants.get(request.name) is not True:
+    if _level(request.name, config) == 4:
         return Decision(False, "not permitted")
+    grants = session_grants or {}
+    persist = persistent_grants or {}
+    # Order matters: an explicit session revoke wins over everything;
+    # otherwise a persistent grant outranks a session grant (so a level-3
+    # tool with both granted resolves to the persistent tier, not session).
+    if grants.get(request.name) is False:
+        effective = False
+    elif persist.get(request.name) is True:
+        effective = "persistent"
+    elif grants.get(request.name) is True:
+        effective = "session"
+    elif persist.get(request.name) is False:
+        effective = False
+    else:
+        effective = None
+    if effective is False or effective is None:
+        return Decision(False, "not permitted")
+    if _level(request.name, config) == 3 and effective == "session":
+        return Decision(False, "requires persistent grant")
 
     # Fine-grained checks -- NEW:
     if request.name == "read_file":

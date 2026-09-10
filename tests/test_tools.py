@@ -208,7 +208,9 @@ def _tools_cfg(enabled=None):
         enabled={"read_file": True, "open_url": True}
         if enabled is None else dict(enabled),
         read_file_dirs=(), open_url_domains=(),
-        max_file_bytes=4096, max_iterations=2, levels={})
+        max_file_bytes=4096, max_iterations=2,
+        # Explicit levels: Slice 8 makes unlisted tools deny-by-default.
+        levels={"read_file": 1, "open_url": 2})
 
 
 def test_decide_unknown_tool():
@@ -326,7 +328,9 @@ def _allow_cfg(tmp_path, sub="notes", domains=("example.com",),
         enabled={"read_file": True, "open_url": True},
         read_file_dirs=(str(notes),),
         open_url_domains=tuple(domains),
-        max_file_bytes=max_bytes, max_iterations=2, levels={}), notes
+        max_file_bytes=max_bytes, max_iterations=2,
+        # Explicit levels: Slice 8 makes unlisted tools deny-by-default.
+        levels={"read_file": 1, "open_url": 2}), notes
 
 
 def _granted():
@@ -408,7 +412,7 @@ def test_read_file_tilde_expansion(tmp_path, monkeypatch):
         enabled={"read_file": True, "open_url": True},
         read_file_dirs=(str(tmp_path),),
         open_url_domains=(), max_file_bytes=4096, max_iterations=2,
-        levels={})
+        levels={"read_file": 1})
     assert decide(ToolRequest("read_file", {"path": "~/notes/a.txt"}),
                   cfg_home, _granted()) == Decision(True, None)
 
@@ -630,3 +634,193 @@ def test_levels_frozen(tmp_path):
         cfg.levels = {}
     with pytest.raises(TypeError):
         cfg.levels["read_file"] = 9
+
+
+def _leveled_cfg(**levels):
+    return ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(), open_url_domains=("example.com",),
+        max_file_bytes=4096, max_iterations=2, levels=dict(levels))
+
+
+def test_level3_session_only_denied():
+    cfg = _leveled_cfg(read_file=3)
+    assert decide(ToolRequest("read_file", {"path": "x"}), cfg,
+                  {"read_file": True}) == \
+        Decision(False, "requires persistent grant")
+
+
+def test_level3_persistent_grant_allows(tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    cfg = ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(str(notes),), open_url_domains=(),
+        max_file_bytes=4096, max_iterations=2,
+        levels={"read_file": 3, "open_url": 2})
+    assert decide(ToolRequest("read_file", {"path": str(notes / "a.txt")}),
+                  cfg, {}, {"read_file": True}) == Decision(True, None)
+
+
+def test_level3_persistent_grant_session_revoke_denies():
+    cfg = _leveled_cfg(read_file=3)
+    assert decide(ToolRequest("read_file", {"path": "x"}), cfg,
+                  {"read_file": False},
+                  {"read_file": True}) == Decision(False, "not permitted")
+
+
+def test_level4_session_grant_denied():
+    cfg = _leveled_cfg(read_file=4)
+    assert decide(ToolRequest("read_file", {"path": "x"}), cfg,
+                  {"read_file": True}) == Decision(False, "not permitted")
+
+
+def test_level4_persistent_grant_denied():
+    cfg = _leveled_cfg(read_file=4)
+    assert decide(ToolRequest("read_file", {"path": "x"}), cfg, {},
+                  {"read_file": True}) == Decision(False, "not permitted")
+
+
+def test_level4_unknown_tool_still_unknown():
+    cfg = _leveled_cfg()
+    assert decide(ToolRequest("rm_rf", {}), cfg, {}) == \
+        Decision(False, "unknown tool")
+
+
+def test_level4_unlisted_tool_denies():
+    cfg = _leveled_cfg(open_url=2)
+    assert decide(ToolRequest("read_file", {"path": "x"}), cfg,
+                  {"read_file": True}) == Decision(False, "not permitted")
+
+
+def test_grant_session_true_persistent_true(tmp_path):
+    cfg, notes = _allow_cfg(tmp_path)
+    cfg = ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(str(notes),), open_url_domains=(),
+        max_file_bytes=4096, max_iterations=2,
+        levels={"read_file": 1, "open_url": 2})
+    req = ToolRequest("read_file", {"path": str(notes / "a.txt")})
+    assert decide(req, cfg, {"read_file": True},
+                  {"read_file": True}) == Decision(True, None)
+    cfg3 = ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(str(notes),), open_url_domains=(),
+        max_file_bytes=4096, max_iterations=2,
+        levels={"read_file": 3, "open_url": 2})
+    assert decide(req, cfg3, {"read_file": True},
+                  {"read_file": True}) == Decision(True, None)
+
+
+def test_grant_session_true_persistent_false(tmp_path):
+    cfg, notes = _allow_cfg(tmp_path)
+    cfg = ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(str(notes),), open_url_domains=(),
+        max_file_bytes=4096, max_iterations=2,
+        levels={"read_file": 1, "open_url": 2})
+    req = ToolRequest("read_file", {"path": str(notes / "a.txt")})
+    # Session True wins at level 1...
+    assert decide(req, cfg, {"read_file": True},
+                  {"read_file": False}) == Decision(True, None)
+    cfg3 = ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(str(notes),), open_url_domains=(),
+        max_file_bytes=4096, max_iterations=2,
+        levels={"read_file": 3, "open_url": 2})
+    # ...but at level 3 a False persistent grant still resolves the
+    # effective tier as session, which requires persistence.
+    assert decide(req, cfg3, {"read_file": True},
+                  {"read_file": False}) == \
+        Decision(False, "requires persistent grant")
+
+
+def test_grant_absent_persistent_true(tmp_path):
+    cfg, notes = _allow_cfg(tmp_path)
+    cfg = ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(str(notes),), open_url_domains=(),
+        max_file_bytes=4096, max_iterations=2,
+        levels={"read_file": 1, "open_url": 2})
+    req = ToolRequest("read_file", {"path": str(notes / "a.txt")})
+    assert decide(req, cfg, {}, {"read_file": True}) == \
+        Decision(True, None)
+    cfg3 = ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(str(notes),), open_url_domains=(),
+        max_file_bytes=4096, max_iterations=2,
+        levels={"read_file": 3, "open_url": 2})
+    assert decide(req, cfg3, {}, {"read_file": True}) == \
+        Decision(True, None)
+
+
+def test_grant_absent_persistent_false():
+    cfg = _leveled_cfg(read_file=1)
+    assert decide(ToolRequest("read_file", {"path": "x"}), cfg, {},
+                  {"read_file": False}) == Decision(False, "not permitted")
+
+
+def test_grant_both_absent():
+    cfg = _leveled_cfg(read_file=1)
+    assert decide(ToolRequest("read_file", {"path": "x"}), cfg, {},
+                  {}) == Decision(False, "not permitted")
+
+
+def test_precedence_config_disabled_wins():
+    cfg = ToolsConfig(
+        enabled={"read_file": False, "open_url": True},
+        read_file_dirs=(), open_url_domains=(),
+        max_file_bytes=4096, max_iterations=2,
+        levels={"read_file": 1, "open_url": 2})
+    assert decide(ToolRequest("read_file", {"path": "x"}), cfg,
+                  {"read_file": True}, {"read_file": True}) == \
+        Decision(False, "disabled")
+
+
+def test_precedence_level4_wins_over_grants():
+    cfg = _leveled_cfg(read_file=4)
+    assert decide(ToolRequest("read_file", {"path": "x"}), cfg,
+                  {"read_file": True}, {"read_file": True}) == \
+        Decision(False, "not permitted")
+
+
+def test_decide_no_mutation_grants():
+    session = {"read_file": True}
+    persistent = {"open_url": True}
+    decide(ToolRequest("read_file", {"path": "x"}),
+           _leveled_cfg(read_file=1), session, persistent)
+    assert session == {"read_file": True}
+    assert persistent == {"open_url": True}
+
+
+def test_decide_deterministic_with_persistent(tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    cfg = ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(str(notes),), open_url_domains=(),
+        max_file_bytes=4096, max_iterations=2,
+        levels={"read_file": 3, "open_url": 2})
+    req = ToolRequest("read_file", {"path": str(notes / "a.txt")})
+    first = decide(req, cfg, {"read_file": True}, {"read_file": True})
+    second = decide(req, cfg, {"read_file": True}, {"read_file": True})
+    assert first == second == Decision(True, None)
+
+
+def test_backward_compat_level1_session_only(tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    cfg = ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(str(notes),), open_url_domains=(),
+        max_file_bytes=4096, max_iterations=2,
+        levels={"read_file": 1, "open_url": 2})
+    assert decide(ToolRequest("read_file", {"path": str(notes / "a.txt")}),
+                  cfg, {"read_file": True}) == Decision(True, None)
+
+
+def test_backward_compat_level2_session_only():
+    cfg = _leveled_cfg(open_url=2)
+    assert decide(
+        ToolRequest("open_url", {"url": "https://example.com/"}),
+        cfg, {"open_url": True}) == Decision(True, None)
