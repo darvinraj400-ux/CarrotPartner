@@ -53,8 +53,8 @@ def make_carrot(personality=None, start=None):
 def replies(*cs):
     out = []
     for c in cs:
-        out.extend(t["text"] for t in c.buffer.recent(100)
-                   if t["role"] == "carrot")
+        out.extend(t.text for t in c.buffer.recent(100)
+                   if t.role == "carrot")
     return out
 
 
@@ -77,7 +77,7 @@ def test_2_insult_hurts_and_shows():
     assert c.state.emotions["hurt"] > 0.4
     assert c.state.emotions["anger"] > 0.4
     assert c.last_behavior.name in ("sad", "sulking", "annoyed", "frustrated")
-    assert len(c.buffer.recent()[0]["text"]) < 60  # short, clipped replies
+    assert len(c.buffer.recent()[0].text) < 60  # short, clipped replies
 
 
 def test_3_apology_repairs():

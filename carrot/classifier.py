@@ -49,9 +49,23 @@ def _has_any(haystack: str, cues) -> bool:
     return any(cue in haystack for cue in cues)
 
 
+def _text_of(turn) -> str:
+    # Phase 1 bridge: accept S2.1 Turn objects and legacy dicts alike.
+    # Removed in Phase 2 when scanning moves to context.py.
+    if isinstance(turn, dict):
+        return str(turn.get("text", turn.get("content", "")))
+    return str(getattr(turn, "text", ""))
+
+
+def _role_of(turn) -> str:
+    if isinstance(turn, dict):
+        return str(turn.get("role", ""))
+    return str(getattr(turn, "role", ""))
+
+
 def _playful_context(context: list) -> bool:
     for turn in (context or [])[-5:]:
-        text = str(turn.get("text", turn.get("content", ""))).lower()
+        text = _text_of(turn).lower()
         if _has_any(text, _PLAY_CONTEXT_CUES):
             return True
     return False
@@ -59,9 +73,9 @@ def _playful_context(context: list) -> bool:
 
 def _prior_harsh_or_tease(context: list) -> bool:
     for turn in (context or [])[-3:]:
-        if turn.get("role") != "user":
+        if _role_of(turn) != "user":
             continue
-        text = str(turn.get("text", turn.get("content", ""))).lower()
+        text = _text_of(turn).lower()
         if _has_any(text, _INSULT_CUES + _JOKE_CUES):
             return True
     return False

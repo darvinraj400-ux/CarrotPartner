@@ -2,7 +2,7 @@
 import pytest
 
 from carrot.classifier import DeterministicClassifier
-from carrot.conversation import ConversationBuffer
+from carrot.conversation import ConversationBuffer, Turn
 from carrot.personality import Personality
 
 
@@ -35,7 +35,7 @@ def test_buffer_verbatim_and_bounded():
     buf.add("user", "a")
     buf.add("user", "b")
     assert len(buf) == 3
-    assert buf.recent()[0] == {"role": "carrot", "text": "ikr 😂"}
+    assert buf.recent()[0] == Turn(role="carrot", text="ikr 😂")
     with pytest.raises(ValueError):
         buf.add("system", "x")
 
