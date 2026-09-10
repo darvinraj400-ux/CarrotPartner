@@ -1,6 +1,8 @@
 """End-to-end behavioral scenarios 1-10 through the orchestrator."""
 import json
 import re
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +13,7 @@ from carrot.classifier import DeterministicClassifier
 from carrot.conversation import ConversationBuffer
 from carrot.emotions import EmotionState
 from carrot.llm import MockLLM
+from carrot.memory import MemoryStore
 from carrot.personality import Personality
 from tests.conftest import ROOT
 from tests.test_classifier import StubSemanticClassifier
@@ -30,9 +33,15 @@ class FakeTime:
         self.t += seconds
 
 
-def make_carrot(personality=None, start=None):
+def make_carrot(personality=None, start=None, memory_store=None):
     clock = start or FakeTime()
     llm = MockLLM()
+    if memory_store is None:
+        # Isolated per-instance store: the abstract default would point
+        # at the real state dir. Kept alive via the returned instance.
+        tmpdir = tempfile.TemporaryDirectory(prefix="carrot-test-mem-")
+    else:
+        tmpdir = None
     carrot = Carrot(
         state=EmotionState(),
         personality=personality or Personality.load(
@@ -44,10 +53,15 @@ def make_carrot(personality=None, start=None):
         decay_cfg=json.loads(
             (ROOT / "config" / "decay.json").read_text(encoding="utf-8")),
         buffer=ConversationBuffer(),
+        memory_store=(memory_store if memory_store is not None
+                      else MemoryStore(
+                          Path(tmpdir.name) / "memories.json",
+                          time_fn=clock)),
         time_fn=clock,
     )
     llm._behavior_getter = lambda: carrot.last_behavior
     carrot.clock = clock
+    carrot._tmp_memdir = tmpdir
     return carrot
 
 
@@ -148,8 +162,11 @@ def test_8_never_announces_machinery():
         c.clock.advance(5)
     for reply in replies(c):
         assert not LEAK.search(reply), reply
-    assert not re.search(r"\d\.\d", c.llm.last_system)
-    assert "0." not in c.llm.last_system
+    # R1: float rule applies to the unquoted skeleton (no memories render
+    # in this script, so the skeleton equals the prompt here).
+    skeleton = re.sub(r'"[^"]*"', "", c.llm.last_system)
+    assert not re.search(r"\d\.\d", skeleton)
+    assert "0." not in skeleton
 
 
 def test_9_same_state_diverges_by_personality():

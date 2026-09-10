@@ -73,6 +73,12 @@ def _system_after(*lines):
     return c.llm.last_system
 
 
+def _skeleton(system):
+    # R1: quoted memory spans may contain anything; the invariant
+    # applies to the unquoted skeleton only.
+    return re.sub(r'"[^"]*"', "", system)
+
+
 def test_hint_pending_present():
     system = _system_after("are you awake?", "yes, I'm here")
     assert "answering your earlier question" in system
@@ -125,6 +131,8 @@ def test_hint_block_omitted_when_nothing_holds():
 
 
 def test_no_digits_across_hint_scenarios():
+    # R1 scope change: digits may appear ONLY inside quoted memory
+    # spans, so the skeleton (quotes stripped) must be digit-free.
     scripts = [
         ("are you awake?", "yes, I'm here"),
         ("that joke was funny lol", "tell me more"),
@@ -132,7 +140,8 @@ def test_no_digits_across_hint_scenarios():
         ("gardening club playoff", "tell me more"),
     ]
     for script in scripts:
-        assert re.search(r"\d", _system_after(*script)) is None, script
+        assert re.search(r"\d", _skeleton(
+            _system_after(*script))) is None, script
 
 
 def test_no_state_names_in_system():
@@ -140,7 +149,7 @@ def test_no_state_names_in_system():
         "are you awake?", "yes, I'm here", "that joke was funny lol",
         "you are useless.", "I'm kidding.")
     assert "Context:" in system  # several hints render at once
-    lowered = system.lower()
+    lowered = _skeleton(system).lower()  # R1: skeleton only
     emotions = ["happiness", "sadness", "anger", "hurt", "affection",
                 "excitement", "embarrassment"]
     moods = ["content", "low", "tender", "tense", "bright"]

@@ -8,17 +8,40 @@ LLM output is returned as text and NEVER parsed back into state.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from . import mood as mood_mod
 from .behavior import Behavior
 from .classifier import InteractionEvent, _INSULT_CUES, _REPAIR_CUES
 from .context import ConversationContext, derive_context
+from .memory import DeterministicExtractor, Memory, MemoryStore
 
 _BAND_WORDS = {"low": "a little", "med": "clearly", "high": "strongly"}
+_MEMORY_RENDER_CHARS = 120
+
+# Mirrors cli.py: StateStore lives at <project>/state/state.json, so the
+# default memory file lives next to it. Tests and callers pass an
+# explicit store instead.
+_DEFAULT_STATE_DIR = Path(__file__).resolve().parents[1] / "state"
 
 
 def _has_cue(lowered_text: str, cues) -> bool:
     return any(cue in lowered_text for cue in cues)
+
+
+def _escape_memory(text: str) -> str:
+    clean = str(text or "").replace("\r", " ").replace("\n", " ")
+    if len(clean) > _MEMORY_RENDER_CHARS:
+        clean = clean[:_MEMORY_RENDER_CHARS] + "…"
+    return clean.replace('"', '\\"')
+
+
+def _memories_block(recalled) -> str:
+    if not recalled:
+        return ""
+    parts = ['You told me: "' + _escape_memory(m.text) + '".'
+             for m in recalled]
+    return " Memories: " + " ".join(parts)
 
 
 def _context_hint(context: ConversationContext, user_text: str) -> str:
@@ -45,6 +68,7 @@ class Carrot:
     def __init__(self, *, state, personality, classifier, appraisal,
                  selector, llm, decay_cfg, buffer=None,
                  absence_threshold_s: float = 21600.0,
+                 memory_store=None, extractor=None,
                  time_fn=None):
         self.state = state
         self.personality = personality
@@ -55,6 +79,11 @@ class Carrot:
         self.decay_cfg = dict(decay_cfg or {})
         self.absence_threshold_s = float(absence_threshold_s)
         self._now = time_fn or time.time
+        self.memory_store = (memory_store if memory_store is not None
+                             else MemoryStore(_DEFAULT_STATE_DIR
+                                              / "memories.json"))
+        self.extractor = (extractor if extractor is not None
+                          else DeterministicExtractor())
         self.last_behavior: Behavior = Behavior("normal", "low")
         self.last_event: InteractionEvent | None = None
         self.last_context = None
@@ -65,7 +94,8 @@ class Carrot:
 
     def _system_prompt(self, behavior: Behavior,
                          context: ConversationContext,
-                         user_text: str) -> str:
+                         user_text: str,
+                         recalled=()) -> str:
         degree = _BAND_WORDS.get(behavior.band, "a little")
         return (
             f"{self.personality.sketch()} "
@@ -74,8 +104,30 @@ class Carrot:
             "internal state, or how your emotions work. Keep replies short "
             "and natural, like a person texting. Mirror the user's language "
             "and emoji naturally; do not force emoji."
+            + _memories_block(recalled)
             + _context_hint(context, user_text)
         )
+
+    @staticmethod
+    def _initial_importance(cand, user_text: str) -> float:
+        lowered = str(user_text or "").lower()
+        if ("remember" in lowered or "don't forget" in lowered
+                or "note that" in lowered):
+            return 0.8
+        return 0.5
+
+    def _store_candidates(self, user_text: str) -> None:
+        seen = {m.text.strip().lower() for m in self.memory_store.all()}
+        now = self._now()
+        for cand in self.extractor.extract(user_text):
+            key = cand.text.strip().lower()
+            if key in seen:
+                continue
+            if self.memory_store.add(Memory(
+                    text=cand.text, kind=cand.kind,
+                    importance=self._initial_importance(cand, user_text),
+                    created_ts=now, last_recalled_ts=now)):
+                seen.add(key)
 
     def process_turn(self, text: str, now: float | None = None) -> str:
         now = float(self._now() if now is None else now)
@@ -115,9 +167,17 @@ class Carrot:
                                       ctx, user_text=str(text))
         self.last_behavior = behavior
 
+        # 5b. Recall long-term memories (decay persisted, hits refreshed).
+        recalled = self.memory_store.recall_and_refresh(
+            current_user_text=str(text),
+            recent_topics=ctx.recent_topics,
+            now=self._now())
+        # 5c. Extract candidate facts from the live turn only.
+        self._store_candidates(str(text))
+
         # 6. LLM renders wording only. Its output never re-enters state.
         reply = self.llm.generate(
-            system=self._system_prompt(behavior, ctx, str(text)),
+            system=self._system_prompt(behavior, ctx, str(text), recalled),
             history=self.buffer.history_for_llm(),
             user=str(text))
 
