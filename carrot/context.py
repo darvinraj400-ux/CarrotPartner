@@ -54,6 +54,13 @@ STOPWORDS = frozenset({
     "yeah", "ok", "okay", "lol", "haha", "im", "ive", "dont", "cant",
     "its", "us", "our", "they", "them", "he", "she", "what", "when",
     "how", "why", "there", "here", "out", "now",
+    "about", "after", "again", "against", "because", "before", "being",
+    "between", "doing", "down", "during", "each", "from", "further",
+    "having", "hers", "herself", "himself", "into", "itself", "more",
+    "most", "other", "over", "same", "some", "such", "than", "their",
+    "theirs", "themselves", "then", "these", "they", "those", "through",
+    "under", "until", "very", "were", "where", "which", "while",
+    "yours", "yourself", "need", "needs",
 })
 
 _TOKEN_RE = re.compile(r"[A-Za-z]+")

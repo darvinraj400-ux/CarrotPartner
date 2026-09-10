@@ -25,7 +25,7 @@ def test_last_context_matches_derive():
     assert "pending_question: False" in out
     assert "playful_frame: False" in out
     assert "recent_harshness: False" in out
-    assert "recent_topics: [talking, about, gardening]" in out
+    assert "recent_topics: [talking, gardening]" in out
     assert "turns: 2" in out
 
 

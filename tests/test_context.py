@@ -161,6 +161,21 @@ def test_topics_cap_dedup_stopwords():
     assert ctx.recent_topics[0] == "game"
 
 
+def test_about_filtered_from_topics():
+    ctx = derive_context(_buf(("user", "talking about gardening")).recent())
+    assert "about" not in ctx.recent_topics
+    assert "talking" in ctx.recent_topics
+    assert "gardening" in ctx.recent_topics
+
+
+def test_light_verb_filtered_from_topics():
+    ctx = derive_context(_buf(("user", "my guitar needs tuning")).recent())
+    assert "guitar" in ctx.recent_topics
+    assert "tuning" in ctx.recent_topics
+    assert "my" not in ctx.recent_topics
+    assert "needs" not in ctx.recent_topics
+
+
 def test_topics_user_only_and_empty():
     ctx = derive_context(_buf(("carrot", "i love chess club")).recent())
     assert ctx.recent_topics == ()
