@@ -169,6 +169,13 @@ class EmotionState:
     @classmethod
     def from_dict(cls, data: dict) -> "EmotionState":
         data = dict(data or {})
+        try:
+            version = int(data.get("version", STATE_VERSION))
+        except (TypeError, ValueError):
+            raise ValueError(f"bad version: {data.get('version')!r}")
+        if version != STATE_VERSION:
+            # Unknown schema: do not silently accept future versions.
+            return cls()
         return cls(
             emotions=data.get("emotions", {}),
             energy=data.get("energy", 0.7),

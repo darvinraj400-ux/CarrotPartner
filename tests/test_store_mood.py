@@ -34,6 +34,31 @@ def test_save_is_atomic_and_utf8(tmp_path):
     assert json.loads(raw)["recent_causes"][0]["reason"] == "emoji 😂 intact"
 
 
+def test_unknown_version_gives_fresh_state():
+    loaded = EmotionState.from_dict({"version": 2,
+                                     "emotions": {"hurt": 0.9},
+                                     "energy": 0.1})
+    assert loaded.to_dict() == EmotionState().to_dict()
+
+
+def test_corrupt_file_quarantined_then_fresh(tmp_path):
+    p = tmp_path / "state.json"
+    p.write_text("{not json", encoding="utf-8")
+    loaded = StateStore(str(p)).load()
+    assert loaded.to_dict() == EmotionState().to_dict()
+    assert not p.exists()
+    assert len(list(tmp_path.glob("quarantine-*.json"))) == 1
+
+
+def test_invalid_schema_quarantined_then_fresh(tmp_path):
+    p = tmp_path / "state.json"
+    p.write_text('{"version": 1, "emotions": {"loneliness": 0.5}}',
+                 encoding="utf-8")
+    loaded = StateStore(str(p)).load()
+    assert loaded.to_dict() == EmotionState().to_dict()
+    assert len(list(tmp_path.glob("quarantine-*.json"))) == 1
+
+
 def test_mood_derivation():
     assert derive({"sadness": 0.7}, "content") == "low"
     assert derive({"hurt": 0.8}, "content") == "low"
