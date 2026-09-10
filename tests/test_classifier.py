@@ -37,9 +37,11 @@ def test_personality_load_and_sketch(tmp_path):
 def test_sketch_vocabulary_pinned():
     # Any sketch wording change must be a deliberate diff, not an
     # accident: pin the exact output for carrot-default-v1.
+    # Deliberately updated in Slice 4 Phase 4 (patience adjective +
+    # dispositional second sentence).
     assert Personality().sketch() == (
         "Carrot is playful, warm, expressive, outgoing, humble, "
-        "sensitive.")
+        "sensitive, patient. Carrot leans into jokes and speaks freely.")
 
 
 def test_patience_default():
@@ -61,6 +63,66 @@ def test_patience_missing_key_defaults(tmp_path):
                  ' "stoicism": 0.4, "shyness": 0.3, "pride": 0.4,'
                  ' "warmth": 0.7}', encoding="utf-8")
     assert Personality.load(str(p)).patience == 0.5
+
+
+def test_default_personality_sketch_exact():
+    assert Personality().sketch() == (
+        "Carrot is playful, warm, expressive, outgoing, humble, "
+        "sensitive, patient. Carrot leans into jokes and speaks freely.")
+
+
+def test_sketch_single_sentence_without_extremes():
+    sketch = Personality(playfulness=0.5, shyness=0.5, warmth=0.5,
+                         sensitivity=0.5, stoicism=0.5, pride=0.5,
+                         patience=0.5).sketch()
+    assert sketch == ("Carrot is playful, warm, stoic, shy, proud, "
+                      "sensitive, patient.")
+    assert " and " not in sketch
+    assert sketch.count("Carrot ") == 1
+
+
+def test_sketch_single_phrase():
+    sketch = Personality(playfulness=0.5, shyness=0.5, warmth=0.5,
+                         stoicism=0.8).sketch()
+    assert sketch.endswith("Carrot keeps feelings close.")
+    assert " and " not in sketch
+
+
+def test_sketch_sensitivity_phrases():
+    assert "takes words to heart" in Personality(sensitivity=0.8).sketch()
+    assert "lets things roll off" in Personality(sensitivity=0.2).sketch()
+
+
+def test_sketch_patience_adjective():
+    assert "patient" in Personality(patience=0.8).sketch()
+    assert "impatient" not in Personality(patience=0.8).sketch()
+    assert "impatient" in Personality(patience=0.2).sketch()
+
+
+def test_sketch_caps_at_two_phrases():
+    sketch = Personality(sensitivity=0.8, playfulness=0.8, stoicism=0.8,
+                         shyness=0.8).sketch()
+    assert sketch == ("Carrot is playful, warm, stoic, shy, humble, "
+                      "sensitive, patient. Carrot takes words to "
+                      "heart and leans into jokes.")
+
+
+def test_sketch_traits_order_priority():
+    sketch = Personality(playfulness=0.8, shyness=0.2).sketch()
+    assert sketch.index("leans into jokes") < sketch.index("speaks freely")
+
+
+def test_sketch_first_two_in_traits_order():
+    sketch = Personality(sensitivity=0.8, playfulness=0.8,
+                         warmth=0.8).sketch()
+    assert "takes words to heart" in sketch
+    assert "leans into jokes" in sketch
+    assert "leads with kindness" not in sketch
+
+
+def test_sketch_deterministic():
+    personality = Personality(sensitivity=0.8, patience=0.2)
+    assert personality.sketch() == personality.sketch()
 
 
 def _ctx(*texts):

@@ -12,6 +12,26 @@ from dataclasses import dataclass
 TRAITS = ("sensitivity", "playfulness", "stoicism",
           "shyness", "pride", "warmth", "patience")
 
+_HIGH_PHRASES = {
+    "sensitivity": "takes words to heart",
+    "playfulness": "leans into jokes",
+    "stoicism": "keeps feelings close",
+    "shyness": "takes time to open up",
+    "pride": "takes quiet satisfaction in small wins",
+    "warmth": "leads with kindness",
+    "patience": "stays steady when things drag",
+}
+
+_LOW_PHRASES = {
+    "sensitivity": "lets things roll off",
+    "playfulness": "keeps things serious",
+    "stoicism": "wears feelings openly",
+    "shyness": "speaks freely",
+    "pride": "treats achievements as routine",
+    "warmth": "keeps a measured distance",
+    "patience": "gets restless when things drag",
+}
+
 
 def _check(name: str, value: float) -> float:
     try:
@@ -56,4 +76,19 @@ class Personality:
         bits.append("shy" if self.shyness >= 0.5 else "outgoing")
         bits.append("proud" if self.pride >= 0.5 else "humble")
         bits.append("sensitive" if self.sensitivity >= 0.5 else "thick-skinned")
-        return "Carrot is " + ", ".join(bits) + "."
+        bits.append("patient" if self.patience >= 0.5 else "impatient")
+        first = "Carrot is " + ", ".join(bits) + "."
+        phrases = []
+        for trait in TRAITS:
+            value = getattr(self, trait)
+            if value >= 0.7:
+                phrases.append(_HIGH_PHRASES[trait])
+            elif value <= 0.3:
+                phrases.append(_LOW_PHRASES[trait])
+            if len(phrases) >= 2:
+                break
+        if not phrases:
+            return first
+        if len(phrases) == 1:
+            return first + " Carrot " + phrases[0] + "."
+        return first + " Carrot " + phrases[0] + " and " + phrases[1] + "."

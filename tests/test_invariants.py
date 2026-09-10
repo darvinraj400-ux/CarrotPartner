@@ -161,3 +161,23 @@ def test_no_state_names_in_system():
     # "emotions" ("how your emotions work"); only specific state names
     # above are forbidden. Likewise "playful"/"warm" adjectives live in
     # the personality sketch by design; only noun trait names are barred.
+
+
+def test_extreme_sketch_passes_leakage():
+    from carrot.personality import Personality
+
+    from tests.test_scenarios import make_carrot
+    extreme = Personality(sensitivity=0.9, playfulness=0.9, stoicism=0.1,
+                          shyness=0.1, pride=0.9, warmth=0.9, patience=0.1)
+    c = make_carrot(personality=extreme)
+    c.process_turn("hello there")
+    system = c.llm.last_system
+    assert "takes words to heart" in system
+    assert re.search(r"\d", re.sub(r'"[^"]*"', "", system)) is None
+    lowered = re.sub(r'"[^"]*"', "", system).lower()
+    for word in ["happiness", "sadness", "anger", "hurt", "affection",
+                 "excitement", "embarrassment", "content", "low",
+                 "tender", "tense", "bright", "sensitivity", "playfulness",
+                 "stoicism", "shyness", "pride", "warmth", "patience",
+                 "mood"]:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
