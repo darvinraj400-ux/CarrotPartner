@@ -110,6 +110,8 @@ class Carrot:
 
     @staticmethod
     def _initial_importance(cand, user_text: str) -> float:
+        # `cand` is currently unused; retained so future kind-weighting
+        # can key off the candidate without a signature change.
         lowered = str(user_text or "").lower()
         if ("remember" in lowered or "don't forget" in lowered
                 or "note that" in lowered):
