@@ -178,3 +178,153 @@ def test_recall_golden_baseline_default_args():
         "rex likes bones",
         "i love pizza",
     ]
+
+
+# --- Slice 10 Phase 1: boost_text tests ---
+# The Phase 0 golden test above passes unmodified with default
+# boost_text="" (verified by the full suite run after this append).
+
+
+def test_boost_matches_one_memory():
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    baseline = recall(mems, "hello there", ())
+    boosted = recall(mems, "hello there", (), boost_text="games")
+    assert [m.text for m in baseline] == ["i love pizza", "i love games"]
+    assert [m.text for m in boosted] == ["i love games", "i love pizza"]
+
+
+def test_boost_matches_multiple_memories():
+    mems = [_mem("i love games", created=300.0),
+            _mem("games are fun", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    baseline = recall(mems, "hello there", ())
+    boosted = recall(mems, "hello there", (), boost_text="games")
+    assert [m.text for m in baseline] == \
+        ["i love pizza", "games are fun", "i love games"]
+    # Both boosted by +1; relative order preserved via created_ts tiebreak.
+    assert [m.text for m in boosted] == \
+        ["games are fun", "i love games", "i love pizza"]
+
+
+def test_boost_is_additive_not_multiplier():
+    # A: turn 1 (2.0) + imp 0.5 = 2.5; B: turn 1 + topics 1 + imp 0.2 = 3.2.
+    # A +1.0 boost (3.5) flips the order; a x1.2 multiplier (3.0) would not.
+    # (Importance clamps to [0, 1], so B's margin is built with topics.)
+    mems = [_mem("my dog rex", importance=0.5, created=100.0),
+            _mem("my dog park plaza", importance=0.2, created=200.0)]
+    baseline = recall(mems, "dog", ("park",))
+    boosted = recall(mems, "dog", ("park",), boost_text="rex")
+    assert [m.text for m in baseline] == \
+        ["my dog park plaza", "my dog rex"]
+    assert [m.text for m in boosted] == \
+        ["my dog rex", "my dog park plaza"]
+
+
+def test_boost_counts_distinct_tokens_not_repetitions():
+    # overlap() uses set(tokenize()) intersection: "games games games"
+    # overlaps "games" by exactly 1, same as plain "games".
+    assert overlap("games games games", "games") == 1
+    mems = [_mem("games games games", created=100.0),
+            _mem("games", created=200.0)]
+    boosted = recall(mems, "hello there", (), boost_text="games")
+    # Equal 1.5 scores; created_ts tiebreak puts the triple first.
+    assert [m.text for m in boosted] == ["games games games", "games"]
+
+
+def test_empty_boost_matches_default():
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    assert recall(mems, "hello", (), boost_text="") == \
+        recall(mems, "hello", ())
+
+
+def test_boost_stopwords_only_no_effect():
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    assert recall(mems, "hello", (), boost_text="the and of") == \
+        recall(mems, "hello", ())
+
+
+def test_boost_digits_only_no_effect():
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    assert recall(mems, "hello", (), boost_text="123 456") == \
+        recall(mems, "hello", ())
+
+
+def test_boost_no_overlap_no_change():
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    assert recall(mems, "hello", (), boost_text="zebra") == \
+        recall(mems, "hello", ())
+
+
+def test_boost_preserves_tiebreak():
+    mems = [_mem("dog rex", created=200.0),
+            _mem("dog rex", created=100.0)]
+    boosted = recall(mems, "hello there", (), boost_text="rex")
+    assert [m.text for m in boosted] == ["dog rex", "dog rex"]
+    assert [m.created_ts for m in boosted] == [100.0, 200.0]
+
+
+def test_turn_overlap_beats_boost():
+    # A: turn 1 (2.0) + imp 0.5 = 2.5; B: boost 1 (1.0) + imp 0.5 = 1.5.
+    mems = [_mem("my dog rex", created=200.0),
+            _mem("my cat tom", created=100.0)]
+    got = recall(mems, "dog", (), boost_text="tom")
+    assert [m.text for m in got] == ["my dog rex", "my cat tom"]
+
+
+def test_topics_and_boost_equal_weight():
+    # A: topics 1 (1.0) + imp 0.5 = 1.5; B: boost 1 (1.0) + imp 0.5 = 1.5.
+    # Tie at equal weight; created_ts tiebreak puts B first.
+    mems = [_mem("my dog park", created=200.0),
+            _mem("my cat tom", created=100.0)]
+    got = recall(mems, "hello there", ("park",), boost_text="tom")
+    assert [m.text for m in got] == ["my cat tom", "my dog park"]
+
+
+def test_combined_turn_topics_boost_scores_four():
+    # A: turn 1 + topics 1 + boost 1 + imp 0.0 = 4.0.
+    # B: turn 1 + topics 1 + boost 0 + imp 1.0 = 4.0.
+    # Tie is only consistent with boost contributing exactly +1.0.
+    mems = [_mem("my dog rex park", importance=0.0, created=100.0),
+            _mem("my dog park", importance=1.0, created=200.0)]
+    got = recall(mems, "dog", ("park",), boost_text="rex")
+    assert [m.text for m in got] == ["my dog rex park", "my dog park"]
+
+
+def test_recall_and_refresh_forwards_boost(tmp_path):
+    path = tmp_path / "memories.json"
+    store = MemoryStore(path)
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    store.save(mems)
+    got = store.recall_and_refresh("hello there", (), 1000.0,
+                                   boost_text="games")
+    expected = recall(mems, "hello there", (), boost_text="games")
+    assert [m.text for m in got] == [m.text for m in expected]
+
+
+def test_recall_and_refresh_default_preserves_behavior(tmp_path):
+    path = tmp_path / "memories.json"
+    store = MemoryStore(path)
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    store.save(mems)
+    assert [m.text for m in
+            store.recall_and_refresh("hello there", (), 1000.0)] == \
+        [m.text for m in
+         store.recall_and_refresh("hello there", (), 1000.0,
+                                  boost_text="")]
+
+
+def test_boost_text_is_keyword_only():
+    mems = [_mem("i love games")]
+    try:
+        recall(mems, "text", (), 3, "games")
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("positional boost_text did not raise")

@@ -187,12 +187,15 @@ class MemoryStore:
     def recall_and_refresh(self, current_user_text: str,
                            recent_topics: Sequence,
                            now: float,
-                           k: int = RECALL_K) -> tuple:
+                           k: int = RECALL_K,
+                           *,
+                           boost_text: str = "") -> tuple:
         """Decay, persist, recall top-k, refresh hits, persist, return."""
         now = float(now)
         decayed = decay_all(self.load(), now)
         self.save(decayed)
-        hits = recall(decayed, current_user_text, recent_topics, k=k)
+        hits = recall(decayed, current_user_text, recent_topics, k=k,
+                      boost_text=boost_text)
         if not hits:
             return hits
         refreshed = [
@@ -212,16 +215,23 @@ def overlap(text_a: str, text_b: str) -> int:
 
 def recall(memories: Sequence, current_user_text: str,
            recent_topics: Sequence = (),
-           k: int = RECALL_K) -> tuple:
-    """Rank memories by turn-overlap, topic-overlap, and importance."""
+           k: int = RECALL_K,
+           *,
+           boost_text: str = "") -> tuple:
+    """Rank memories by turn-overlap, topic-overlap, boost, importance."""
     items = list(memories or ())
     if not items or k is None or int(k) <= 0:
         return ()
     topics_text = " ".join(str(t) for t in (recent_topics or ()))
     scored = []
     for memory in items:
+        # Slice 10: boost_text carries context-derived tokens (currently the
+        # environment app noun). Weight = 1, parity with the topics term.
+        # Hardcoded per planner ruling R2; revisit only when a second boost
+        # source arrives (e.g. relationship weighting in Slice 11).
         score = (2 * overlap(memory.text, current_user_text)
                  + overlap(memory.text, topics_text)
+                 + overlap(memory.text, boost_text)
                  + float(memory.importance))
         scored.append((score, memory))
     scored.sort(key=lambda item: (-item[0], item[1].created_ts,
