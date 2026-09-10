@@ -66,6 +66,21 @@ STOPWORDS = frozenset({
 _TOKEN_RE = re.compile(r"[A-Za-z]+")
 
 
+def tokenize(text: str) -> tuple:
+    """Normalize one text into tokens.
+
+    Lowercase, alphabetic-only, length >= 2, stopword-filtered,
+    order-preserving with duplicates removed. Pure.
+    """
+    seen: list = []
+    for raw in _TOKEN_RE.findall(str(text or "").lower()):
+        token = raw[:MAX_TOKEN_LEN]
+        if len(token) < 2 or token in STOPWORDS or token in seen:
+            continue
+        seen.append(token)
+    return tuple(seen)
+
+
 def _text_of(turn) -> str:
     if isinstance(turn, dict):
         return str(turn.get("text", turn.get("content", "")))
@@ -132,9 +147,8 @@ def _recent_topics(turns: Sequence) -> tuple:
     for turn in turns:
         if _role_of(turn) != "user":
             continue
-        for raw in _TOKEN_RE.findall(_text_of(turn).lower()):
-            token = raw[:MAX_TOKEN_LEN]
-            if len(token) < 2 or token in STOPWORDS or token in seen:
+        for token in tokenize(_text_of(turn)):
+            if token in seen:
                 continue
             seen.append(token)
             if len(seen) >= TOPIC_CAP:

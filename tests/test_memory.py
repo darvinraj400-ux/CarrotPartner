@@ -144,9 +144,13 @@ def test_memory_does_not_import_emotions():
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             mods.update(a.name.split(".")[0] for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0:
-            mods.add((node.module or "").split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                mods.add((node.module or "").split(".")[0])
+            elif node.module:
+                mods.add(node.module.split(".")[0])
     assert "emotions" not in mods, mods
+    assert "context" in mods, mods  # tokenizer reuse (Phase 3)
     src = (ROOT / "carrot" / "memory.py").read_text(encoding="utf-8")
     assert "from .emotions import" not in src
     assert "from carrot.emotions import" not in src

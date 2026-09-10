@@ -15,11 +15,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
+from .context import tokenize
+
 MEMORY_SCHEMA_VERSION = 1
 MAX_MEMORIES = 50
 MAX_MEMORY_TEXT_CHARS = 140
 MAX_FILE_BYTES = 16 * 1024
 KINDS = ("fact", "preference")
+RECALL_K = 3
+IMPORTANCE_HALF_LIFE_S = 45 * 24 * 3600
+IMPORTANCE_FLOOR = 0.05
 
 
 def _clamp01(value: float) -> float:
@@ -178,6 +183,83 @@ class MemoryStore:
 
     def all(self) -> tuple:
         return self.load()
+
+    def recall_and_refresh(self, current_user_text: str,
+                           recent_topics: Sequence,
+                           now: float,
+                           k: int = RECALL_K) -> tuple:
+        """Decay, persist, recall top-k, refresh hits, persist, return."""
+        now = float(now)
+        decayed = decay_all(self.load(), now)
+        self.save(decayed)
+        hits = recall(decayed, current_user_text, recent_topics, k=k)
+        if not hits:
+            return hits
+        refreshed = [
+            Memory(text=m.text, kind=m.kind, importance=m.importance,
+                   created_ts=m.created_ts, last_recalled_ts=now)
+            for m in hits
+        ]
+        by_id = {id(m): r for m, r in zip(hits, refreshed)}
+        self.save([by_id.get(id(m), m) for m in decayed])
+        return tuple(refreshed)
+
+
+def overlap(text_a: str, text_b: str) -> int:
+    """Distinct normalized tokens present in both texts."""
+    return len(set(tokenize(text_a)) & set(tokenize(text_b)))
+
+
+def recall(memories: Sequence, current_user_text: str,
+           recent_topics: Sequence = (),
+           k: int = RECALL_K) -> tuple:
+    """Rank memories by turn-overlap, topic-overlap, and importance."""
+    items = list(memories or ())
+    if not items or k is None or int(k) <= 0:
+        return ()
+    topics_text = " ".join(str(t) for t in (recent_topics or ()))
+    scored = []
+    for memory in items:
+        score = (2 * overlap(memory.text, current_user_text)
+                 + overlap(memory.text, topics_text)
+                 + float(memory.importance))
+        scored.append((score, memory))
+    scored.sort(key=lambda item: (-item[0], item[1].created_ts,
+                                  item[1].text))
+    return tuple(memory for _, memory in scored[:int(k)])
+
+
+def apply_importance_decay(memory: Memory, elapsed_s: float,
+                           half_life_s: float = IMPORTANCE_HALF_LIFE_S
+                           ) -> Memory:
+    """Return a decayed copy; the original is never mutated."""
+    try:
+        elapsed = float(elapsed_s)
+        half_life = float(half_life_s)
+    except (TypeError, ValueError):
+        raise ValueError("bad decay elapsed/half-life")
+    factor = (0.5 ** (elapsed / half_life)
+              if elapsed > 0 and half_life > 0 else 1.0)
+    return Memory(text=memory.text, kind=memory.kind,
+                  importance=memory.importance * factor,
+                  created_ts=memory.created_ts,
+                  last_recalled_ts=memory.last_recalled_ts)
+
+
+def decay_all(memories: Sequence, now: float) -> tuple:
+    """Decay by wall-clock age; drop anything below the floor."""
+    now = float(now)
+    out = []
+    for memory in memories or ():
+        elapsed = now - float(memory.last_recalled_ts)
+        if elapsed <= 0:
+            out.append(memory)
+            continue
+        decayed = apply_importance_decay(memory, elapsed)
+        if decayed.importance < IMPORTANCE_FLOOR:
+            continue
+        out.append(decayed)
+    return tuple(out)
 
 
 @dataclass(frozen=True)
