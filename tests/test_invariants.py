@@ -448,12 +448,7 @@ def test_no_state_names_in_system():
         "you are useless.", "I'm kidding.")
     assert "Context:" in system  # several hints render at once
     lowered = _skeleton(system).lower()  # R1: skeleton only
-    emotions = ["happiness", "sadness", "anger", "hurt", "affection",
-                "excitement", "embarrassment"]
-    moods = ["content", "low", "tender", "tense", "bright"]
-    traits = ["sensitivity", "playfulness", "stoicism", "shyness",
-              "pride", "warmth"]
-    for word in emotions + moods + traits + ["mood"]:
+    for word in _STATE_NAMES:
         assert re.search(rf"\b{word}\b", lowered) is None, word
     # Note: the frozen Slice-1 base prompt contains the generic word
     # "emotions" ("how your emotions work"); only specific state names
@@ -516,10 +511,7 @@ def test_drive_sentence_skeleton_clean(tmp_path):
     skeleton = _skeleton(c.llm.last_system)
     assert re.search(r"\d", skeleton) is None
     lowered = skeleton.lower()
-    for word in ["happiness", "sadness", "anger", "hurt", "affection",
-                 "excitement", "embarrassment", "content", "low",
-                 "tender", "tense", "bright", "sensitivity", "playfulness",
-                 "stoicism", "shyness", "pride", "warmth", "mood"]:
+    for word in _STATE_NAMES:
         assert re.search(rf"\b{word}\b", lowered) is None, word
 
 
@@ -560,11 +552,7 @@ def test_extreme_sketch_passes_leakage():
     assert "takes words to heart" in system
     assert re.search(r"\d", re.sub(r'"[^"]*"', "", system)) is None
     lowered = re.sub(r'"[^"]*"', "", system).lower()
-    for word in ["happiness", "sadness", "anger", "hurt", "affection",
-                 "excitement", "embarrassment", "content", "low",
-                 "tender", "tense", "bright", "sensitivity", "playfulness",
-                 "stoicism", "shyness", "pride", "warmth", "patience",
-                 "mood"]:
+    for word in _STATE_NAMES:
         assert re.search(rf"\b{word}\b", lowered) is None, word
 
 
@@ -737,10 +725,7 @@ def test_tools_block_skeleton_clean():
     skeleton = re.sub(r'"[^"]*"', "", _TOOLS_BLOCK)
     assert re.search(r"\d", skeleton) is None
     lowered = skeleton.lower()
-    for word in ["happiness", "sadness", "anger", "hurt", "affection",
-                 "excitement", "embarrassment", "content", "low",
-                 "tender", "tense", "bright", "sensitivity", "playfulness",
-                 "stoicism", "shyness", "pride", "warmth", "mood"]:
+    for word in _STATE_NAMES:
         assert re.search(rf"\b{word}\b", lowered) is None, word
 
 
@@ -753,6 +738,14 @@ def test_tools_block_tool_names_digit_free():
 _BANNED_PERMISSION_WORDS = (
     "granted", "grant", "denied", "deny",
     "consent", "policy", "revoke", "permission", "permissions",
+)
+
+_STATE_NAMES = (
+    "happiness", "sadness", "anger", "hurt", "affection",
+    "excitement", "embarrassment", "content", "low",
+    "tender", "tense", "bright", "sensitivity", "playfulness",
+    "stoicism", "shyness", "pride", "warmth", "patience",
+    "mood",
 )
 
 
@@ -937,3 +930,44 @@ def test_permissions_module_does_not_import_llm():
                         if a.name in banned:
                             offenders.append(a.name)
     assert offenders == []
+
+
+def test_initiative_reason_lines_are_clean():
+    """
+    Slice 9 invariant: the initiative reason lines are LLM-facing. They
+    must contain no digits, no permission vocabulary, no state names.
+    A future edit that interpolates a value (e.g. 'away for N hours')
+    or leaks permission vocabulary would be caught here.
+    """
+    from carrot.cli import _INITIATIVE_REASON_LINES
+    banned = _BANNED_PERMISSION_WORDS  # existing tuple in this module
+    for reason, line in _INITIATIVE_REASON_LINES.items():
+        assert re.search(r"\d", line) is None, f"digit in {reason!r}: {line!r}"
+        lower = line.lower()
+        for word in banned:
+            assert not re.search(rf"\b{re.escape(word)}\b", lower), \
+                f"banned word {word!r} in {reason!r}: {line!r}"
+        for word in _STATE_NAMES:
+            assert not re.search(rf"\b{word}\b", lower), \
+                f"state name {word!r} in {reason!r}: {line!r}"
+
+
+def test_initiative_system_prompt_is_clean():
+    """
+    Slice 9 invariant: the full away-mode system prompt is LLM-facing.
+    No digits, no permission vocabulary, no state names — extending the
+    LLM-invisibility invariant (Slice 8) to the initiative path.
+    """
+    from carrot.cli import _initiative_system_prompt
+
+    c = make_carrot()
+    for reason in ("long-absence", "high-social-drive", "session-open"):
+        system = _initiative_system_prompt(c, reason)
+        assert re.search(r"\d", system) is None, reason
+        lowered = system.lower()
+        for word in _BANNED_PERMISSION_WORDS:
+            assert re.search(rf"\b{word}\b", lowered) is None, \
+                (reason, word)
+        for word in _STATE_NAMES:
+            assert re.search(rf"\b{word}\b", lowered) is None, \
+                (reason, word)
