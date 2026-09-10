@@ -97,6 +97,8 @@ def _has_any(haystack: str, cues) -> bool:
     return any(cue in haystack for cue in cues)
 
 
+# ConversationContext is ephemeral per-turn state. Environment observations
+# (Slice 6) are a sibling value type with the same lifetime, never persisted.
 @dataclass(frozen=True)
 class ConversationContext:
     turns: tuple = ()

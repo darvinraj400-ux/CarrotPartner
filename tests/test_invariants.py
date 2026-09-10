@@ -69,6 +69,36 @@ def test_no_autonomy_primitives():
     assert sleepers == []
 
 
+# Slice 6 boundary: perception is read-only. `ctypes` is permitted only in
+# `carrot/environment_win32.py` (the Windows probe); no other module may
+# import it, and no module may call WinDLL/CDLL/windll.
+def test_no_os_write_primitives():
+    importers = []
+    callers = []
+    for path in (ROOT / "carrot").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name.split(".")[0] == "ctypes":
+                        importers.append(path.name)
+            elif isinstance(node, ast.ImportFrom):
+                mod = (node.module or "").split(".")[0]
+                if node.level == 0 and mod == "ctypes":
+                    importers.append(path.name)
+                for a in node.names:
+                    if a.name == "ctypes":
+                        importers.append(path.name)
+            elif isinstance(node, ast.Attribute):
+                if node.attr in ("windll", "CDLL", "WinDLL"):
+                    value = node.value
+                    if isinstance(value, ast.Name) and value.id == "ctypes":
+                        callers.append((path.name, node.attr))
+    assert all(name == "environment_win32.py" for name in importers), \
+        importers
+    assert callers == []
+
+
 def test_state_does_not_grow_without_bound(tmp_path):
     c = make_carrot()
     lines = ["hello there?", "You're cute!", "that joke was funny lol",
