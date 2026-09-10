@@ -43,9 +43,11 @@ _BAND_WORDS = {"low": "a little", "med": "clearly", "high": "strongly"}
 _MEMORY_RENDER_CHARS = 120
 
 _TOOLS_BLOCK = (
-    "Tools you may use: read_file (read a file I approve), "
-    "open_url (open a link I approve). To use one, reply with exactly "
-    'a fenced block in this form: tool:NAME {"arg": "value"}'
+    'Tools you may use. '
+    'read_file: read a file inside an allowed folder. Args: {"path": "<absolute path>"}. '
+    'open_url: open a link inside an allowed domain. Args: {"url": "<http or https url>"}. '
+    'To use a tool, reply with exactly this block, including the triple backticks: '
+    '```tool:NAME {"arg": "value"}```'
 )
 
 # Drive-pull sentences: static strings only, never parameterized by

@@ -579,8 +579,21 @@ def test_env_block_present_when_only_env(tmp_path):
 
 def test_tools_block_pinned():
     """The Tools: block is a stable capability advertisement.
-    Its exact wording is pinned so any change is a deliberate diff."""
-    assert _TOOLS_BLOCK == 'Tools you may use: read_file (read a file I approve), open_url (open a link I approve). To use one, reply with exactly a fenced block in this form: tool:NAME {"arg": "value"}'
+    Its exact wording is pinned so any change is a deliberate diff.
+    Corrected in Phase 5b: the original described a fenced format but
+    omitted the fence characters the parser requires."""
+    assert _TOOLS_BLOCK == 'Tools you may use. read_file: read a file inside an allowed folder. Args: {"path": "<absolute path>"}. open_url: open a link inside an allowed domain. Args: {"url": "<http or https url>"}. To use a tool, reply with exactly this block, including the triple backticks: ```tool:NAME {"arg": "value"}```'
+
+
+def test_tools_block_contains_fence():
+    """The Tools: block must contain literal triple backticks so the
+    advertised format matches parse_tool_request's grammar. Without
+    this, an LLM following the block literally would emit unfenced
+    requests that parse as plain text."""
+    from carrot.carrot import _TOOLS_BLOCK
+    assert _TOOLS_BLOCK.count("```") >= 2
+    assert "```tool:NAME" in _TOOLS_BLOCK
+    assert _TOOLS_BLOCK.endswith("```")
 
 
 def test_tools_block_present_every_turn():
@@ -588,7 +601,7 @@ def test_tools_block_present_every_turn():
     for text in ("hello there", "how are you?", "tell me more"):
         c.process_turn(text)
         c.clock.advance(5)
-        assert "Tools you may use:" in c.llm.last_system
+        assert "Tools you may use." in c.llm.last_system
 
 
 def test_tools_block_before_memories():
@@ -598,7 +611,7 @@ def test_tools_block_before_memories():
     c.process_turn("what was my name")
     system = c.llm.last_system
     assert "Memories:" in system
-    assert system.index("Tools you may use:") < system.index("Memories:")
+    assert system.index("Tools you may use.") < system.index("Memories:")
 
 
 def test_tools_block_before_context():
@@ -608,7 +621,7 @@ def test_tools_block_before_context():
     c.process_turn("tell me more")
     system = c.llm.last_system
     assert "Context:" in system
-    assert system.index("Tools you may use:") < system.index("Context:")
+    assert system.index("Tools you may use.") < system.index("Context:")
 
 
 def test_tools_block_skeleton_clean():
