@@ -83,8 +83,7 @@ class Carrot:
         self.state.set_mood(mood_mod.derive(self.state.emotions,
                                             self.state.mood))
         behavior = self.selector.pick(self.state, self.personality,
-                                      self.buffer.recent(),
-                                      user_text=str(text))
+                                      ctx, user_text=str(text))
         self.last_behavior = behavior
 
         # 6. LLM renders wording only. Its output never re-enters state.

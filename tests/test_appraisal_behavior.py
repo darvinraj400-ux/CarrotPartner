@@ -4,6 +4,8 @@ import pytest
 from carrot.appraisal import Appraisal
 from carrot.behavior import BEHAVIORS, BehaviorSelector
 from carrot.classifier import InteractionEvent
+from carrot.context import derive_context
+from carrot.conversation import ConversationBuffer
 from carrot.emotions import EmotionState
 from carrot.personality import Personality
 
@@ -17,6 +19,17 @@ OPEN = Personality(id="open", sensitivity=0.2, playfulness=0.7,
                    stoicism=0.1, shyness=0.2, pride=0.4, warmth=0.7)
 STOIC = Personality(id="stoic", sensitivity=0.9, playfulness=0.3,
                     stoicism=0.9, shyness=0.5, pride=0.5, warmth=0.4)
+
+
+def _blank():
+    return derive_context(())
+
+
+def _ctx(*pairs):
+    buf = ConversationBuffer()
+    for role, text in pairs:
+        buf.add(role, text)
+    return derive_context(buf.recent())
 
 
 def test_no_worried_behavior():
@@ -46,30 +59,104 @@ def test_sensitivity_gate_only_touches_insult_hurt():
 def test_same_state_diverges_by_personality():
     sel = BehaviorSelector({})
     s = EmotionState(emotions={"hurt": 0.65, "anger": 0.4})
-    assert sel.pick(s, STOIC).name == "sulking"
-    assert sel.pick(s, OPEN).name == "sad"
+    assert sel.pick(s, STOIC, _blank(), "").name == "sulking"
+    assert sel.pick(s, OPEN, _blank(), "").name == "sad"
 
 
 def test_behavior_paths():
     sel = BehaviorSelector({})
     p = Personality()
-    assert sel.pick(EmotionState(emotions={"anger": 0.7}), p).name == "annoyed"
-    assert sel.pick(EmotionState(emotions={"sadness": 0.7}), p).name == "sad"
+    assert sel.pick(EmotionState(emotions={"anger": 0.7}), p,
+                    _blank(), "").name == "annoyed"
+    assert sel.pick(EmotionState(emotions={"sadness": 0.7}), p,
+                    _blank(), "").name == "sad"
     shy = Personality(shyness=0.8)
     assert sel.pick(EmotionState(emotions={"embarrassment": 0.7}),
-                    shy).name == "shy"
+                    shy, _blank(), "").name == "shy"
     assert sel.pick(EmotionState(emotions={"embarrassment": 0.7}),
-                    p).name == "embarrassed"
-    assert sel.pick(EmotionState(energy=0.1), p).name == "quiet"
+                    p, _blank(), "").name == "embarrassed"
+    assert sel.pick(EmotionState(energy=0.1), p, _blank(), "").name == "quiet"
     proud = Personality(pride=0.8)
     s = EmotionState(emotions={"happiness": 0.6},
                      recent_causes=[{"event": "achievement"}])
-    assert sel.pick(s, proud).name == "proud"
-    q = sel.pick(EmotionState(), p, user_text="are you there?")
+    assert sel.pick(s, proud, _blank(), "").name == "proud"
+    q = sel.pick(EmotionState(), p, _blank(), "are you there?")
     assert q.name == "curious"
     # Carrot's own trailing "?" must never self-trigger curiosity.
     own = sel.pick(EmotionState(), p,
-                   context=[{"role": "carrot", "text": "yeah?"}],
-                   user_text="anyway.")
+                   _ctx(("carrot", "yeah?")), "anyway.")
     assert own.name == "normal"
-    assert sel.pick(EmotionState(), p).name == "normal"
+    assert sel.pick(EmotionState(), p, _blank(), "").name == "normal"
+
+
+def _playful_ctx():
+    return _ctx(("user", "lol that was funny"))
+
+
+def _harsh_ctx():
+    return _ctx(("user", "you are useless"))
+
+
+def _pending_ctx():
+    return _ctx(("user", "hey"), ("carrot", "are you there?"))
+
+
+def test_playful_frame_gate():
+    sel = BehaviorSelector({})
+    p = Personality()
+    warm = EmotionState(emotions={"happiness": 0.7, "affection": 0.7})
+    assert sel.pick(warm, p, _playful_ctx(), "haha").name == "playful"
+    # Same state, no frame: existing affectionate gate wins instead.
+    assert sel.pick(warm, p, _blank(), "haha").name == "affectionate"
+
+
+def test_repair_gate_accepts():
+    sel = BehaviorSelector({})
+    p = Personality()
+    resting = EmotionState()
+    assert sel.pick(resting, p, _harsh_ctx(), "I'm kidding.").name == "normal"
+    warm = EmotionState(emotions={"happiness": 0.6, "affection": 0.7})
+    assert sel.pick(warm, p, _harsh_ctx(),
+                    "I'm kidding.").name == "affectionate"
+
+
+def test_repair_gate_needs_live_hedge():
+    sel = BehaviorSelector({})
+    hurt = EmotionState(emotions={"hurt": 0.65, "anger": 0.4})
+    # Harsh history but no hedge in the live message: sulk wins.
+    assert sel.pick(hurt, OPEN, _harsh_ctx(), "leave me alone.").name == "sad"
+
+
+def test_pending_question_answered():
+    sel = BehaviorSelector({})
+    p = Personality()
+    assert sel.pick(EmotionState(), p, _pending_ctx(),
+                    "I'm here, running late").name == "curious"
+    # A question is not an answer: existing curiosity path, unchanged.
+    assert sel.pick(EmotionState(), p, _pending_ctx(),
+                    "what do you mean?").name == "curious"
+    # A hedge is not an answer either: falls through to normal.
+    assert sel.pick(EmotionState(), p, _pending_ctx(),
+                    "I'm kidding").name == "normal"
+
+
+def test_warmth_modulates_affection_gate():
+    sel = BehaviorSelector({})
+    mid = EmotionState(emotions={"happiness": 0.6, "affection": 0.63})
+    assert sel.pick(mid, Personality(warmth=0.9),
+                    _blank(), "").name == "affectionate"
+    assert sel.pick(mid, Personality(warmth=0.5),
+                    _blank(), "").name == "normal"
+    high = EmotionState(emotions={"happiness": 0.6, "affection": 0.67})
+    assert sel.pick(high, Personality(warmth=0.5),
+                    _blank(), "").name == "affectionate"
+    assert sel.pick(high, Personality(warmth=0.1),
+                    _blank(), "").name == "normal"
+
+
+def test_warmth_extremes_stay_sane():
+    sel = BehaviorSelector({})
+    for warmth in (0.0, 1.0):
+        got = sel.pick(EmotionState(), Personality(warmth=warmth),
+                       _blank(), "")
+        assert got.name in BEHAVIORS

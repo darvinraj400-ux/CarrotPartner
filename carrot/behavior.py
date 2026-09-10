@@ -9,6 +9,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from .classifier import _INSULT_CUES, _REPAIR_CUES
+from .context import ConversationContext
+
+# Warmth shifts the affection gate: higher warmth lowers the bar.
+WARMTH_WEIGHT = 0.10
+_AFF_THRESHOLD_LO = 0.4
+_AFF_THRESHOLD_HI = 0.9
+
 BEHAVIORS = ("normal", "playful", "excited", "sad", "annoyed", "sulking",
              "quiet", "shy", "affectionate", "embarrassed", "curious",
              "proud", "frustrated")
@@ -28,6 +36,19 @@ def _band(strength: float) -> str:
     return "low"
 
 
+def _contains_any(text, cues) -> bool:
+    return any(cue in str(text or "").lower() for cue in cues)
+
+
+def _user_answered(user_text: str) -> bool:
+    lowered = str(user_text or "").strip().lower()
+    if not lowered or lowered.endswith("?"):
+        return False
+    if _contains_any(lowered, _REPAIR_CUES):
+        return False
+    return not _contains_any(lowered, _INSULT_CUES)
+
+
 class BehaviorSelector:
     def __init__(self, thresholds: dict):
         self._t = dict(thresholds or {})
@@ -43,8 +64,13 @@ class BehaviorSelector:
         except (TypeError, ValueError):
             return default
 
-    def pick(self, state, personality, context=None,
-             user_text: str = "") -> Behavior:
+    def _affection_threshold(self, personality) -> float:
+        base = self._get("affectionate", 0.65)
+        adjusted = base - (float(personality.warmth) - 0.5) * WARMTH_WEIGHT
+        return max(_AFF_THRESHOLD_LO, min(_AFF_THRESHOLD_HI, adjusted))
+
+    def pick(self, state, personality, context: ConversationContext,
+             user_text: str) -> Behavior:
         e = state.emotions
         t = self._get
         causes = state.recent_causes
@@ -74,7 +100,16 @@ class BehaviorSelector:
         exc, hap, aff = e["excitement"], e["happiness"], e["affection"]
         if exc >= t("playful_excitement", 0.55) and personality.playfulness >= 0.5:
             return Behavior("playful", _band(exc))
-        if aff >= t("affectionate", 0.65) and hap >= 0.5:
+        if (context.playful_frame and personality.playfulness >= 0.5
+                and (exc >= t("playful_excitement", 0.55)
+                     or hap >= t("happy", 0.65))):
+            return Behavior("playful", _band(max(exc, hap)))
+        if context.recent_harshness and _contains_any(user_text,
+                                                      _REPAIR_CUES):
+            if aff >= self._affection_threshold(personality) and hap >= 0.5:
+                return Behavior("affectionate", _band(aff))
+            return Behavior("normal", "low")
+        if aff >= self._affection_threshold(personality) and hap >= 0.5:
             return Behavior("affectionate", _band(aff))
         if exc >= t("excited", 0.6):
             return Behavior("excited", _band(exc))
@@ -94,6 +129,8 @@ class BehaviorSelector:
         # A question from the user invites curiosity. This reads the live
         # message (not context) so Carrot's own "yeah?" can never
         # self-trigger it, including on the very first turn.
+        if context.pending_question and _user_answered(user_text):
+            return Behavior("curious", "low")
         if str(user_text or "").strip().endswith("?"):
             return Behavior("curious", "low")
 

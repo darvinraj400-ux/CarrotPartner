@@ -200,3 +200,14 @@ def test_stub_semantic_classifier_pluggable_through_orchestrator():
     text, ctx = stub.seen[0]
     assert text == "utterly ordinary sentence"
     assert hasattr(ctx, "recent_harshness")
+
+
+def test_pending_filler_excluded_end_to_end():
+    c = make_carrot()
+    c.process_turn("just stopping by.")
+    assert c.buffer.recent()[-1].text == "hey."
+    c.process_turn("anyway.")
+    assert c.buffer.recent()[-1].text == "yeah?"
+    # "yeah?" is filler, not a question: answering it is not curiosity.
+    c.process_turn("noted.")
+    assert c.last_behavior.name == "normal"
