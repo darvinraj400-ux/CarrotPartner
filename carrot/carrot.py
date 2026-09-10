@@ -21,6 +21,14 @@ from .drives import (
     drive_pull,
     update_rise,
 )
+from .environment import (
+    EMPTY_RAW,
+    EMPTY_SNAPSHOT,
+    EnvironmentConfig,
+    EnvironmentSnapshot,
+    MockEnvironmentProbe,
+    map_observation,
+)
 from .memory import DeterministicExtractor, Memory, MemoryStore
 
 _BAND_WORDS = {"low": "a little", "med": "clearly", "high": "strongly"}
@@ -41,6 +49,8 @@ _DEFAULT_STATE_DIR = Path(__file__).resolve().parents[1] / "state"
 # behavior never depends on the process working directory.
 _DEFAULT_DRIVES_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "drives.json")
+_DEFAULT_ENVIRONMENT_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "environment.json")
 
 
 def _has_cue(lowered_text: str, cues) -> bool:
@@ -92,6 +102,7 @@ class Carrot:
                  absence_threshold_s: float = 21600.0,
                  memory_store=None, extractor=None,
                  drive_store=None, drives_config=None,
+                 environment_probe=None, environment_config=None,
                  time_fn=None):
         self.state = state
         self.personality = personality
@@ -115,6 +126,15 @@ class Carrot:
             drives_config = DrivesConfig.load(_DEFAULT_DRIVES_CONFIG_PATH)
         self.drives_config = drives_config
         self.last_drive_pull: str | None = None
+        self.environment_probe = (environment_probe
+                                  if environment_probe is not None
+                                  else MockEnvironmentProbe())
+        if environment_config is None:
+            # Config is required: a missing file is a hard error here.
+            environment_config = EnvironmentConfig.load(
+                _DEFAULT_ENVIRONMENT_CONFIG_PATH)
+        self.environment_config = environment_config
+        self.last_environment: EnvironmentSnapshot = EMPTY_SNAPSHOT
         self.last_behavior: Behavior = Behavior("normal", "low")
         self.last_event: InteractionEvent | None = None
         self.last_context = None
@@ -189,6 +209,15 @@ class Carrot:
         # 3. Interpret the live message with pre-turn context flags.
         ctx = derive_context(self.buffer.recent())
         self.last_context = ctx
+        # 3a. Observe the environment. Retained only; the classifier,
+        # behavior, and prompt do not consume it yet (Phase 3+). A
+        # failing probe must never break a turn, so fall back to empty.
+        try:
+            raw = self.environment_probe.observe()
+        except Exception:
+            raw = EMPTY_RAW
+        self.last_environment = map_observation(raw,
+                                                self.environment_config)
         event = self.classifier.classify(text, ctx)
         self.last_event = event
 

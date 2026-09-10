@@ -15,6 +15,7 @@ from carrot.emotions import EmotionState
 from carrot.llm import MockLLM
 from carrot.memory import MemoryStore
 from carrot.drives import DriveStore, DrivesConfig
+from carrot.environment import EnvironmentConfig
 from carrot.personality import Personality
 from tests.conftest import ROOT
 from tests.test_classifier import StubSemanticClassifier
@@ -68,6 +69,8 @@ def make_carrot(personality=None, start=None, memory_store=None,
         drive_store=drive_store,
         drives_config=DrivesConfig.load(
             str(ROOT / "config" / "drives.json")),
+        environment_config=EnvironmentConfig.load(
+            str(ROOT / "config" / "environment.json")),
         time_fn=clock,
     )
     llm._behavior_getter = lambda: carrot.last_behavior
