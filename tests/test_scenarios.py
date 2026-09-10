@@ -13,6 +13,7 @@ from carrot.emotions import EmotionState
 from carrot.llm import MockLLM
 from carrot.personality import Personality
 from tests.conftest import ROOT
+from tests.test_classifier import StubSemanticClassifier
 
 LEAK = re.compile(r"\d\.\d|happiness level|sadness level|internal state|"
                   r"my .* (is|at) 0|emotion (value|vector)")
@@ -183,3 +184,19 @@ def test_10_contextual_tease_then_repair():
     d = make_carrot()
     d.process_turn("You're useless \U0001F602")
     assert d.last_event.type == "insult"
+
+
+def test_stub_semantic_classifier_pluggable_through_orchestrator():
+    from carrot.classifier import InteractionEvent
+
+    c = make_carrot()
+    stub = StubSemanticClassifier(InteractionEvent("compliment", 0.7,
+                                                   "stub verdict"))
+    c.classifier = stub  # no orchestrator edits needed
+    reply = c.process_turn("utterly ordinary sentence")
+    assert isinstance(reply, str) and reply
+    assert c.last_event.type == "compliment"
+    assert c.state.emotions["happiness"] > 0.5  # appraisal still applied
+    text, ctx = stub.seen[0]
+    assert text == "utterly ordinary sentence"
+    assert hasattr(ctx, "recent_harshness")

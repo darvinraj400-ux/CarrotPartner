@@ -12,6 +12,7 @@ import time
 from . import mood as mood_mod
 from .behavior import Behavior
 from .classifier import InteractionEvent
+from .context import derive_context
 
 _BAND_WORDS = {"low": "a little", "med": "clearly", "high": "strongly"}
 
@@ -67,9 +68,9 @@ class Carrot:
                 intent.deltas,
                 {"event": "return", "reason": intent.reason, "ts": now})
 
-        # 3. Interpret the live message with conversational context.
-        context = self.buffer.recent()
-        event = self.classifier.classify(text, context)
+        # 3. Interpret the live message with pre-turn context flags.
+        ctx = derive_context(self.buffer.recent())
+        event = self.classifier.classify(text, ctx)
         self.last_event = event
 
         # 4. Appraise and apply -- the single state-write path for events.

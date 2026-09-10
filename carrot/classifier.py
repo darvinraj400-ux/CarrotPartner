@@ -1,15 +1,16 @@
 """Interaction interpretation.
 
-Slice 1 uses a deterministic classifier only. The
-``InteractionClassifier`` protocol leaves room for a future
-semantic/LLM classifier as a drop-in replacement: it receives the
-current text PLUS recent conversational context, so interpretation
-never depends on an isolated message alone.
+Slice 2: the deterministic classifier reads a pre-derived
+``ConversationContext`` (see ``context.py``) instead of scanning raw
+turns. Cue detection on the live message stays here; all history
+scanning lives in ``context.py``.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol
+
+from .context import ConversationContext
 
 EVENT_TYPES = ("compliment", "insult", "apology", "joke", "affection",
                "repair", "achievement", "neutral", "return")
@@ -23,7 +24,8 @@ class InteractionEvent:
 
 
 class InteractionClassifier(Protocol):
-    def classify(self, text: str, context: list) -> InteractionEvent:
+    def classify(self, text: str,
+                 context: ConversationContext) -> InteractionEvent:
         ...
 
 
@@ -41,44 +43,10 @@ _ACHIEVE_CUES = ("fixed it", "fixed that", "did it", "finished",
                  "got the job", "passed", "i won", "finally fixed")
 _JOKE_CUES = ("lol", "lmao", "haha", "😂", "🤣", " funny", "joke")
 _LAUGHTER_EMOJI = ("😂", "🤣")
-_PLAY_CONTEXT_CUES = ("lol", "lmao", "haha", "😂", "🤣", "kidding",
-                      "teasing", "joke", "playful")
 
 
 def _has_any(haystack: str, cues) -> bool:
     return any(cue in haystack for cue in cues)
-
-
-def _text_of(turn) -> str:
-    # Phase 1 bridge: accept S2.1 Turn objects and legacy dicts alike.
-    # Removed in Phase 2 when scanning moves to context.py.
-    if isinstance(turn, dict):
-        return str(turn.get("text", turn.get("content", "")))
-    return str(getattr(turn, "text", ""))
-
-
-def _role_of(turn) -> str:
-    if isinstance(turn, dict):
-        return str(turn.get("role", ""))
-    return str(getattr(turn, "role", ""))
-
-
-def _playful_context(context: list) -> bool:
-    for turn in (context or [])[-5:]:
-        text = _text_of(turn).lower()
-        if _has_any(text, _PLAY_CONTEXT_CUES):
-            return True
-    return False
-
-
-def _prior_harsh_or_tease(context: list) -> bool:
-    for turn in (context or [])[-3:]:
-        if _role_of(turn) != "user":
-            continue
-        text = _text_of(turn).lower()
-        if _has_any(text, _INSULT_CUES + _JOKE_CUES):
-            return True
-    return False
 
 
 def _intensity(text: str, strong: bool = False) -> float:
@@ -99,20 +67,20 @@ def _intensity(text: str, strong: bool = False) -> float:
 
 
 class DeterministicClassifier:
-    """Rule-and-cue interpreter. No LLM involved."""
+    """Rule-and-cue interpreter over the live message + context flags."""
 
-    def classify(self, text: str, context: list) -> InteractionEvent:
+    def classify(self, text: str,
+                 context: ConversationContext) -> InteractionEvent:
         raw = str(text or "")
         lowered = raw.lower().strip()
-        ctx = list(context or [])
         if not lowered:
             return InteractionEvent("neutral", 0.0, "empty input")
 
         if _has_any(lowered, _REPAIR_CUES):
-            if _prior_harsh_or_tease(ctx):
+            if context.recent_harshness:
                 return InteractionEvent(
                     "repair", _intensity(raw),
-                    "hedge references a prior tease/harsh turn")
+                    "hedge with recent harsh/tease context")
             return InteractionEvent("neutral", 0.3, "unanchored hedge")
 
         if _has_any(lowered, _APOLOGY_CUES):
@@ -121,10 +89,10 @@ class DeterministicClassifier:
 
         if _has_any(lowered, _INSULT_CUES):
             if (_has_any(lowered, _LAUGHTER_EMOJI)
-                    and _playful_context(ctx)):
+                    and context.playful_frame):
                 return InteractionEvent(
                     "joke", _intensity(raw),
-                    "hostile cue softened by laughter in a playful context")
+                    "hostile cue softened by laughter in a playful frame")
             return InteractionEvent("insult", _intensity(raw, strong=True),
                                     "hostile cue without a play frame")
 

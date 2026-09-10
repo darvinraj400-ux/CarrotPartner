@@ -33,15 +33,14 @@ PLAY_CUES = ("lol", "lmao", "haha", "\U0001F602", "\U0001F923",
 SERIOUS_CUES = ("useless", "stupid", "dumb", "idiot", "hate you",
                 "shut up", "worthless", "pathetic", "trash")
 
-# Hedge cues mirror the classifier's repair set.
-HEDGE_CUES = ("kidding", "just joking", "didn't mean", "didnt mean",
-              "don't mean", "dont mean", "just teasing", "only teasing",
-              "that came out wrong")
-
-# Tease cues mirror the classifier's humor set for repair anchoring.
+# Tease cues mirror the classifier's humor set for harshness anchoring.
 TEASE_CUES = ("lol", "lmao", "haha", "\U0001F602", "\U0001F923",
               " funny", "joke")
 
+# Hedge cues are NOT evaluated here. Whether the live message is a hedge
+# is decided by the classifier (current text) and behavior (user_text);
+# this flag is only the harsh-side precondition. (No hedge set is kept
+# in this module.)
 REPAIR_WINDOW = 5
 TOPIC_CAP = 5
 MAX_TOKEN_LEN = 20
@@ -81,7 +80,7 @@ class ConversationContext:
     turns: tuple = ()
     pending_question: bool = False
     playful_frame: bool = False
-    repair_context: bool = False
+    recent_harshness: bool = False
     recent_topics: tuple = ()
 
 
@@ -111,11 +110,11 @@ def _playful_frame(turns: Sequence) -> bool:
     return False
 
 
-def _repair_context(turns: Sequence) -> bool:
+def _recent_harshness(turns: Sequence) -> bool:
+    # Precondition only, not a verdict: harsh/tease support for a repair
+    # lives in the last 5 user turns. The hedge half is checked against
+    # the live message by the classifier, not here.
     user_turns = [t for t in turns if _role_of(t) == "user"]
-    if not any(_has_any(_text_of(t).lower(), HEDGE_CUES)
-               for t in user_turns):
-        return False
     recent = user_turns[-REPAIR_WINDOW:]
     return any(_has_any(_text_of(t).lower(), SERIOUS_CUES + TEASE_CUES)
                for t in recent)
@@ -143,6 +142,6 @@ def derive_context(turns: Sequence) -> ConversationContext:
         turns=seq,
         pending_question=_pending_question(seq),
         playful_frame=_playful_frame(seq),
-        repair_context=_repair_context(seq),
+        recent_harshness=_recent_harshness(seq),
         recent_topics=_recent_topics(seq),
     )

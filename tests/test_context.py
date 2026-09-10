@@ -62,7 +62,7 @@ def test_empty_input_gives_blank_context():
     assert ctx.turns == ()
     assert ctx.pending_question is False
     assert ctx.playful_frame is False
-    assert ctx.repair_context is False
+    assert ctx.recent_harshness is False
     assert ctx.recent_topics == ()
 
 
@@ -113,14 +113,14 @@ def test_playful_frame_no_cues():
                           ).playful_frame is False
 
 
-# ---- derive_context: repair_context ----
+# ---- derive_context: recent_harshness ----
 
 def test_repair_widened_window_harsh_five_back():
     ctx = derive_context(_buf(
         ("user", "you are useless"),
         ("user", "alpha"), ("user", "beta"), ("user", "gamma"),
         ("user", "I'm kidding")).recent())
-    assert ctx.repair_context is True
+    assert ctx.recent_harshness is True
 
 
 def test_repair_harsh_six_back_out_of_window():
@@ -129,14 +129,16 @@ def test_repair_harsh_six_back_out_of_window():
         ("user", "alpha"), ("user", "beta"), ("user", "gamma"),
         ("user", "delta"),
         ("user", "I'm kidding")).recent())
-    assert ctx.repair_context is False
+    assert ctx.recent_harshness is False
 
 
-def test_repair_needs_both_sides():
+def test_recent_harshness_is_precondition_not_verdict():
+    # Hedge alone is not harshness; harsh alone IS (the hedge half is
+    # checked against the live message by the classifier, not here).
     assert derive_context(_buf(("user", "I'm kidding")).recent()
-                          ).repair_context is False
+                          ).recent_harshness is False
     assert derive_context(_buf(("user", "you are useless")).recent()
-                          ).repair_context is False
+                          ).recent_harshness is True
 
 
 # ---- derive_context: recent_topics ----
@@ -175,7 +177,7 @@ def test_context_has_no_floats_and_is_pure():
     assert list(turns) == list(_buf(("user", "game night lol?"),
                                    ("carrot", "yeah?")).recent())
     for value in (first.pending_question, first.playful_frame,
-                  first.repair_context):
+                  first.recent_harshness):
         assert isinstance(value, bool)
     assert all(isinstance(t, str) for t in first.recent_topics)
 
