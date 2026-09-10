@@ -163,6 +163,41 @@ def test_no_os_write_primitives():
         writes.extend(
             (path.name, hit) for hit in _find_write_calls(tree))
     assert writes == []
+
+
+# Slice 7 boundary: shelling out is permitted only inside carrot/tools.py
+# (the sanctioned tool-execution module). Everywhere else is banned.
+# webbrowser is intentionally not on this list — it is the sanctioned
+# URL-launch mechanism and handles process spawning internally.
+def test_no_subprocess_outside_tools():
+    offenders = []
+    for path in (ROOT / "carrot").glob("*.py"):
+        if path.name == "tools.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name.split(".")[0] == "subprocess":
+                        offenders.append((path.name, a.name))
+            elif isinstance(node, ast.ImportFrom):
+                mod = (node.module or "").split(".")[0]
+                if node.level == 0 and mod == "subprocess":
+                    offenders.append((path.name, node.module))
+                if node.level == 0 and mod == "os":
+                    for a in node.names:
+                        if a.name in ("system", "popen", "startfile") \
+                                or a.name.startswith(("exec", "spawn")):
+                            offenders.append(
+                                (path.name, "os." + a.name))
+            elif isinstance(node, ast.Attribute):
+                value = node.value
+                if isinstance(value, ast.Name) and value.id == "os":
+                    if node.attr in ("system", "popen", "startfile") \
+                            or node.attr.startswith(("exec", "spawn")):
+                        offenders.append(
+                            (path.name, "os." + node.attr))
+    assert offenders == []
     for path in (ROOT / "carrot").glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         guarded, unguarded = _env_win32_imports(tree)

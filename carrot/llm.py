@@ -33,6 +33,8 @@ MOCK_REPLIES = {
 
 
 class LLMProvider(Protocol):
+    # Signature frozen. Slice 7 tool requests are parsed from the text
+    # return value by a free function; generate() is not extended.
     def generate(self, *, system: str, history: list, user: str) -> str:
         ...
 
