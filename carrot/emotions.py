@@ -28,11 +28,15 @@ RESTING = {
     "sadness": 0.05,
     "anger": 0.05,
     "hurt": 0.05,
+    # affection = emotional feeling toward the user, decays to baseline.
+    # Distinct from a future "social" drive (accumulating need for interaction).
     "affection": 0.5,
     "excitement": 0.2,
     "embarrassment": 0.0,
 }
 RESTING_ENERGY = 0.7
+# energy = current capacity. Not a "rest drive": Slice 5 deliberately does
+# not model a rest need, because energy already represents that dimension.
 
 
 def clamp(value: float) -> float:

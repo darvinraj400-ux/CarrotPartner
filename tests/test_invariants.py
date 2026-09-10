@@ -25,6 +25,38 @@ def test_runtime_is_stdlib_only():
     assert offenders == []
 
 
+def test_no_autonomy_primitives():
+    """Pins the Slice 5/9 boundary before Slice 5 code exists: no
+    schedulers, threads, processes, timers, or sleeps anywhere in
+    runtime code. Any future drift fails loudly here."""
+    banned = {"threading", "asyncio", "sched", "multiprocessing", "Timer"}
+    offenders = []
+    sleepers = []
+    for path in (ROOT / "carrot").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name.split(".")[0] in banned:
+                        offenders.append((path.name, a.name))
+            elif isinstance(node, ast.ImportFrom):
+                mod = (node.module or "").split(".")[0]
+                if node.level == 0 and mod in banned:
+                    offenders.append((path.name, node.module))
+                for a in node.names:
+                    if a.name in banned:
+                        offenders.append((path.name, a.name))
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if (isinstance(func, ast.Attribute)
+                        and func.attr == "sleep"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id == "time"):
+                    sleepers.append(path.name)
+    assert offenders == []
+    assert sleepers == []
+
+
 def test_state_does_not_grow_without_bound(tmp_path):
     c = make_carrot()
     lines = ["hello there?", "You're cute!", "that joke was funny lol",
