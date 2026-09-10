@@ -36,7 +36,9 @@ BEHAVIORS = ("normal", "playful", "excited", "sad", "annoyed", "sulking",
              "proud", "frustrated")
 
 # Proud trigger sets: high pride also takes pride in shared jokes and
-# affection, not only achievements and praise.
+# affection, not only achievements and praise. Below PROUD_MIN_PRIDE
+# the gate cannot fire at all.
+PROUD_MIN_PRIDE = 0.3
 PROUD_HIGH_PRIDE_CUTOFF = 0.7
 BASE_PROUD_EVENTS = (
     "achievement",
@@ -150,11 +152,12 @@ class BehaviorSelector:
                 return Behavior("playful", _band(hap))
             return Behavior("excited", _band(hap))
 
-        allowed_events = (
-            PROUD_HIGH_PRIDE_EVENTS
-            if personality.pride >= PROUD_HIGH_PRIDE_CUTOFF
-            else BASE_PROUD_EVENTS
-        )
+        if personality.pride < PROUD_MIN_PRIDE:
+            allowed_events = ()  # too humble: gate cannot fire
+        elif personality.pride >= PROUD_HIGH_PRIDE_CUTOFF:
+            allowed_events = PROUD_HIGH_PRIDE_EVENTS
+        else:
+            allowed_events = BASE_PROUD_EVENTS
         if (last_event in allowed_events
                 and hap >= t("proud_happiness", 0.45)):
             return Behavior("proud", _band(hap))

@@ -295,3 +295,23 @@ def test_proud_happiness_requirement_unchanged():
     sel = BehaviorSelector({})
     assert sel.pick(_proud_state("joke", happiness=0.4),
                     Personality(pride=0.8), _blank(), "").name != "proud"
+
+
+def test_proud_floor_blocks_very_humble():
+    sel = BehaviorSelector({})
+    assert sel.pick(_proud_state("achievement"), Personality(pride=0.1),
+                    _blank(), "").name != "proud"
+    assert sel.pick(_proud_state("achievement"), Personality(pride=0.29),
+                    _blank(), "").name != "proud"
+
+
+def test_proud_floor_boundary_inclusive():
+    sel = BehaviorSelector({})
+    assert sel.pick(_proud_state("achievement"), Personality(pride=0.3),
+                    _blank(), "").name == "proud"
+
+
+def test_proud_above_floor_uses_base_set():
+    sel = BehaviorSelector({})
+    assert sel.pick(_proud_state("achievement"), Personality(pride=0.5),
+                    _blank(), "").name == "proud"
