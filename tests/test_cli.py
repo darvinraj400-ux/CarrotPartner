@@ -1,5 +1,8 @@
 """Phase-5 tests: /ctx handler, last_context retention, help text."""
 import re
+import sys
+
+import pytest
 
 from carrot.cli import (
     HELP_TEXT,
@@ -18,7 +21,11 @@ from carrot.cli import (
 )
 from carrot.context import derive_context
 from carrot.drives import DriveState, DriveStore, DrivesConfig
-from carrot.environment import MockEnvironmentProbe, RawObservation
+from carrot.environment import (
+    EMPTY_SNAPSHOT,
+    MockEnvironmentProbe,
+    RawObservation,
+)
 from carrot.memory import MAX_MEMORIES, Memory, MemoryStore
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
@@ -336,7 +343,7 @@ def _staged_root(tmp_path, monkeypatch):
     (tmp_path / "config").mkdir(exist_ok=True)
     (tmp_path / "state").mkdir(exist_ok=True)
     for name in ("personality.json", "appraisal.json", "behavior.json",
-                 "decay.json"):
+                 "decay.json", "environment.json"):
         shutil.copy(ROOT / "config" / name, tmp_path / "config" / name)
     monkeypatch.setattr("carrot.cli.ROOT", tmp_path)
     return tmp_path
@@ -344,28 +351,36 @@ def _staged_root(tmp_path, monkeypatch):
 
 def test_launch_increments_session_count(tmp_path, monkeypatch):
     _staged_root(tmp_path, monkeypatch)
-    assert build_carrot().state.session_count == 1
+    assert build_carrot(environment_probe=MockEnvironmentProbe()) \
+        .state.session_count == 1
 
 
 def test_launch_again_increments(tmp_path, monkeypatch):
     _staged_root(tmp_path, monkeypatch)
-    build_carrot()
-    assert build_carrot().state.session_count == 2
+    build_carrot(environment_probe=MockEnvironmentProbe())
+    assert build_carrot(environment_probe=MockEnvironmentProbe()) \
+        .state.session_count == 2
 
 
 def test_first_seen_set_once(tmp_path, monkeypatch):
     _staged_root(tmp_path, monkeypatch)
-    assert build_carrot(time_fn=lambda: 1000.0).state.first_seen_ts == 1000.0
-    assert build_carrot(time_fn=lambda: 2000.0).state.first_seen_ts == 1000.0
+    assert build_carrot(time_fn=lambda: 1000.0,
+                        environment_probe=MockEnvironmentProbe()) \
+        .state.first_seen_ts == 1000.0
+    assert build_carrot(time_fn=lambda: 2000.0,
+                        environment_probe=MockEnvironmentProbe()) \
+        .state.first_seen_ts == 1000.0
 
 
 def test_last_seen_untouched_by_launch(tmp_path, monkeypatch):
     _staged_root(tmp_path, monkeypatch)
-    first = build_carrot(time_fn=lambda: 1000.0)
+    first = build_carrot(time_fn=lambda: 1000.0,
+                         environment_probe=MockEnvironmentProbe())
     first.process_turn("hello there")
     first.store.save(first.state)
     seen = first.state.last_seen
-    relaunched = build_carrot(time_fn=lambda: 9999.0)
+    relaunched = build_carrot(time_fn=lambda: 9999.0,
+                              environment_probe=MockEnvironmentProbe())
     assert relaunched.state.last_seen == seen
     assert relaunched.state.session_count == 2
 
@@ -463,3 +478,26 @@ def test_dbg_shows_env_and_existing_content():
 
 def test_help_lists_env():
     assert "/env" in HELP_TEXT
+
+
+def test_build_carrot_with_explicit_mock(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    carrot = build_carrot(environment_probe=MockEnvironmentProbe())
+    assert carrot.last_environment == EMPTY_SNAPSHOT
+    assert format_env(carrot) == "app: unknown\nidle: False\nobserved: no"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="windows-only")
+def test_build_carrot_windows_real_probe(tmp_path, monkeypatch):
+    from carrot.environment_win32 import WindowsEnvironmentProbe
+
+    _staged_root(tmp_path, monkeypatch)
+    carrot = build_carrot()
+    assert isinstance(carrot.environment_probe, WindowsEnvironmentProbe)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="non-windows-only")
+def test_build_carrot_non_windows_mock(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    carrot = build_carrot()
+    assert isinstance(carrot.environment_probe, MockEnvironmentProbe)

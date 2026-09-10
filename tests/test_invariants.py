@@ -78,6 +78,9 @@ def test_no_autonomy_primitives():
 # sanctioned one, may call a known write primitive. Together they make the
 # test name honest. Full write-protection is Slice 8's job; this is a
 # static tripwire, not a comprehensive policy.
+# `environment_win32` itself may be imported only in `cli.py`, lazily
+# inside an `if ... win32 ...` branch (checked below); every other
+# importer — guarded or not — fails.
 _WRITE_APIS = frozenset({
     "SetForegroundWindow", "SendInput", "keybd_event", "mouse_event",
     "CreateFileW", "WriteFile", "ShellExecuteW", "ShellExecuteExW",
@@ -91,6 +94,43 @@ def _find_write_calls(tree):
     return [node.attr for node in ast.walk(tree)
             if isinstance(node, ast.Attribute)
             and node.attr in _WRITE_APIS]
+
+
+def _is_env_win32_import(node) -> bool:
+    if isinstance(node, ast.Import):
+        return any(name.name.split(".")[-1] == "environment_win32"
+                   for name in node.names)
+    if isinstance(node, ast.ImportFrom):
+        mod = node.module or ""
+        if node.level > 0:
+            return mod == "environment_win32"
+        return mod.split(".")[-1] == "environment_win32"
+    return False
+
+
+def _env_win32_imports(tree):
+    """Split environment_win32 imports into (guarded, unguarded) linenos.
+
+    Guarded means nested inside an `if` whose condition mentions win32.
+    """
+    guarded, unguarded = [], []
+
+    def walk(node, inside_win32_branch):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.If):
+                try:
+                    cond = ast.unparse(child.test)
+                except Exception:
+                    cond = ""
+                walk(child, inside_win32_branch or "win32" in cond)
+            else:
+                if _is_env_win32_import(child):
+                    (guarded if inside_win32_branch else unguarded).append(
+                        child.lineno)
+                walk(child, inside_win32_branch)
+
+    walk(tree, False)
+    return guarded, unguarded
 
 
 def test_no_os_write_primitives():
@@ -123,6 +163,12 @@ def test_no_os_write_primitives():
         writes.extend(
             (path.name, hit) for hit in _find_write_calls(tree))
     assert writes == []
+    for path in (ROOT / "carrot").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        guarded, unguarded = _env_win32_imports(tree)
+        assert unguarded == [], (path.name, unguarded)
+        if guarded:
+            assert path.name == "cli.py", (path.name, guarded)
 
 
 def test_write_api_ban_has_teeth():

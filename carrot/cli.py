@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from .drives import drive_pull
+from .environment import MockEnvironmentProbe
 from .memory import MAX_MEMORY_TEXT_CHARS, Memory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,13 +139,14 @@ def _load_json(name: str) -> dict:
         return json.load(fh)
 
 
-def build_carrot(llm=None, time_fn=None):
+def build_carrot(llm=None, time_fn=None, environment_probe=None):
     from .appraisal import Appraisal
     from .behavior import BehaviorSelector
     from .carrot import Carrot
     from .classifier import DeterministicClassifier
     from .conversation import ConversationBuffer
     from .emotions import EmotionState
+    from .environment import EnvironmentConfig
     from .llm import MockLLM, make_provider
     from .personality import Personality
     from .state_store import StateStore
@@ -159,6 +161,16 @@ def build_carrot(llm=None, time_fn=None):
         state.first_seen_ts = (time_fn or time.time)()
     store.save(state)
     personality = Personality.load(str(ROOT / "config" / "personality.json"))
+    environment_config = EnvironmentConfig.load(
+        str(ROOT / "config" / "environment.json"))
+    if environment_probe is None:
+        if sys.platform == "win32":
+            from .environment_win32 import WindowsEnvironmentProbe
+
+            environment_probe = WindowsEnvironmentProbe(
+                idle_threshold_s=environment_config.idle_threshold_s)
+        else:
+            environment_probe = MockEnvironmentProbe()
     carrot = Carrot(
         state=state,
         personality=personality,
@@ -168,6 +180,8 @@ def build_carrot(llm=None, time_fn=None):
         llm=llm or make_provider(),
         decay_cfg=_load_json("decay.json"),
         buffer=ConversationBuffer(),
+        environment_probe=environment_probe,
+        environment_config=environment_config,
     )
     if isinstance(carrot.llm, MockLLM) and carrot.llm._behavior_getter is None:
         carrot.llm._behavior_getter = lambda: carrot.last_behavior
