@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 TOOLS = ("read_file", "open_url")
 DEFAULT_MAX_FILE_BYTES = 4096
@@ -150,12 +151,12 @@ def decide(
     config: ToolsConfig,
     session_grants: Mapping[str, bool],
 ) -> Decision:
-    """Coarse permission check at the tool-category level.
+    """Coarse permission check at the tool-category level, then
+    fine-grained argument validation per tool (Phase 3).
 
     Deny unknown tools, config-disabled tools, and anything without an
     explicit session grant (absent and revoked both read as "no", so the
-    LLM cannot distinguish them). Fine-grained argument validation is a
-    later phase; request.args is never inspected here.
+    LLM cannot distinguish them).
     """
     if request.name not in TOOLS:
         return Decision(False, "unknown tool")
@@ -164,4 +165,88 @@ def decide(
     grants = session_grants or {}
     if grants.get(request.name) is not True:
         return Decision(False, "not permitted")
+
+    # Fine-grained checks -- NEW:
+    if request.name == "read_file":
+        return _decide_read_file(request.args, config)
+    if request.name == "open_url":
+        return _decide_open_url(request.args, config)
+    return Decision(True, None)  # future tools default to coarse-only
+
+
+def _decide_read_file(args, config: ToolsConfig) -> Decision:
+    path = (args or {}).get("path")
+    if not isinstance(path, str) or not path.strip():
+        return Decision(False, "missing path")
+    expanded = os.path.expanduser(path)
+    if not os.path.isabs(expanded):
+        return Decision(False, "path must be absolute")
+    resolved = os.path.realpath(expanded)
+    norm_resolved = os.path.normcase(resolved)
+    for allowed in config.read_file_dirs:
+        norm_allowed = os.path.normcase(allowed)
+        if norm_resolved == norm_allowed or norm_resolved.startswith(
+                norm_allowed + os.sep):
+            return Decision(True, None)
+    return Decision(False, "path not allowed")
+
+
+def _decide_open_url(args, config: ToolsConfig) -> Decision:
+    url = (args or {}).get("url")
+    if not isinstance(url, str) or not url.strip():
+        return Decision(False, "missing url")
+    try:
+        parsed = urllib.parse.urlparse(url.strip())
+    except ValueError:
+        return Decision(False, "invalid url")
+    if parsed.scheme.lower() not in ("http", "https"):
+        return Decision(False, "unsupported scheme")
+    host = parsed.hostname or ""
+    if not host:
+        return Decision(False, "invalid url")
+    if host not in config.open_url_domains:
+        return Decision(False, "domain not allowed")
     return Decision(True, None)
+
+
+def execute(
+    request: ToolRequest,
+    config: ToolsConfig,
+    *,
+    launcher: Callable[[str], bool] | None = None,
+) -> ToolResult:
+    """Perform the tool action. Caller must have already obtained
+    Decision(allowed=True) from decide() -- execute does not re-check.
+    Never raises; all errors return as ToolResult(ok=False, error=...).
+    """
+    if request.name == "read_file":
+        return _execute_read_file(request.args, config)
+    if request.name == "open_url":
+        return _execute_open_url(request.args, launcher)
+    return ToolResult(ok=False, output="", error="unknown tool")
+
+
+def _execute_read_file(args, config: ToolsConfig) -> ToolResult:
+    path = (args or {}).get("path", "")
+    try:
+        resolved = os.path.realpath(os.path.expanduser(path))
+        with open(resolved, "rb") as fh:
+            raw = fh.read(config.max_file_bytes + 1)
+        text = raw[:config.max_file_bytes].decode("utf-8", errors="replace")
+        return ToolResult(ok=True, output=text, error=None)
+    except Exception:
+        return ToolResult(ok=False, output="", error="read failed")
+
+
+def _execute_open_url(args, launcher) -> ToolResult:
+    url = (args or {}).get("url", "")
+    try:
+        if launcher is None:
+            import webbrowser
+
+            launcher = webbrowser.open
+        if launcher(url):
+            return ToolResult(ok=True, output="opened", error=None)
+        return ToolResult(ok=False, output="", error="launch failed")
+    except Exception:
+        return ToolResult(ok=False, output="", error="launch failed")
