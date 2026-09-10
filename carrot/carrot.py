@@ -30,6 +30,7 @@ from .environment import (
     MockEnvironmentProbe,
     map_observation,
 )
+from .initiative import InitiativeConfig, InitiativeStore
 from .memory import DeterministicExtractor, Memory, MemoryStore
 from .permissions import PermissionState, PermissionStore
 from .tools import (
@@ -72,6 +73,10 @@ _DEFAULT_ENVIRONMENT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "environment.json")
 _DEFAULT_TOOLS_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "tools.json")
+_DEFAULT_INITIATIVE_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "initiative.json")
+_DEFAULT_INITIATIVE_STORE_PATH = (
+    Path(__file__).resolve().parents[1] / "state" / "initiative.json")
 
 
 def _has_cue(lowered_text: str, cues) -> bool:
@@ -138,6 +143,7 @@ class Carrot:
                  drive_store=None, drives_config=None,
                  environment_probe=None, environment_config=None,
                  tools_config=None, permission_store=None,
+                 initiative_config=None, initiative_store=None,
                  time_fn=None):
         self.state = state
         self.personality = personality
@@ -180,6 +186,14 @@ class Carrot:
                 _DEFAULT_ENVIRONMENT_CONFIG_PATH)
         self.environment_config = environment_config
         self.last_environment: EnvironmentSnapshot = EMPTY_SNAPSHOT
+        if initiative_config is None:
+            # Config is required: a missing file is a hard error here.
+            initiative_config = InitiativeConfig.load(
+                _DEFAULT_INITIATIVE_CONFIG_PATH)
+        self.initiative_config = initiative_config
+        if initiative_store is None:
+            initiative_store = InitiativeStore(_DEFAULT_INITIATIVE_STORE_PATH)
+        self.initiative_store = initiative_store
         self.last_behavior: Behavior = Behavior("normal", "low")
         self.last_event: InteractionEvent | None = None
         self.last_context = None

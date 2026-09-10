@@ -14,6 +14,7 @@ from carrot.conversation import ConversationBuffer
 from carrot.emotions import EmotionState
 from carrot.llm import MockLLM
 from carrot.memory import MemoryStore
+from carrot.initiative import InitiativeConfig, InitiativeStore
 from carrot.permissions import PermissionStore
 from carrot.drives import DriveStore, DrivesConfig
 from carrot.environment import EnvironmentConfig
@@ -37,7 +38,8 @@ class FakeTime:
 
 
 def make_carrot(personality=None, start=None, memory_store=None,
-                drive_store=None, permission_store=None):
+                drive_store=None, permission_store=None,
+                initiative_store=None):
     clock = start or FakeTime()
     llm = MockLLM()
     if memory_store is None:
@@ -59,6 +61,13 @@ def make_carrot(personality=None, start=None, memory_store=None,
                                            time_fn=clock)
     else:
         permdir = None
+    if initiative_store is None:
+        initdir = tempfile.TemporaryDirectory(prefix="carrot-test-init-")
+        initiative_store = InitiativeStore(Path(initdir.name)
+                                           / "initiative.json",
+                                           time_fn=clock)
+    else:
+        initdir = None
     carrot = Carrot(
         state=EmotionState(),
         personality=personality or Personality.load(
@@ -80,6 +89,9 @@ def make_carrot(personality=None, start=None, memory_store=None,
         permission_store=permission_store,
         environment_config=EnvironmentConfig.load(
             str(ROOT / "config" / "environment.json")),
+        initiative_config=InitiativeConfig.load(
+            str(ROOT / "config" / "initiative.json")),
+        initiative_store=initiative_store,
         time_fn=clock,
     )
     llm._behavior_getter = lambda: carrot.last_behavior
@@ -87,6 +99,7 @@ def make_carrot(personality=None, start=None, memory_store=None,
     carrot._tmp_memdir = tmpdir
     carrot._tmp_drvdir = memdir
     carrot._tmp_permdir = permdir
+    carrot._tmp_initdir = initdir
     return carrot
 
 
