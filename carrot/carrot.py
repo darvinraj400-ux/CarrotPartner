@@ -8,6 +8,7 @@ LLM output is returned as text and NEVER parsed back into state.
 from __future__ import annotations
 
 import time
+from collections import deque
 from pathlib import Path
 
 from . import mood as mood_mod
@@ -30,6 +31,13 @@ from .environment import (
     map_observation,
 )
 from .memory import DeterministicExtractor, Memory, MemoryStore
+from .tools import (
+    ToolCall,
+    ToolsConfig,
+    decide,
+    execute,
+    parse_tool_request,
+)
 
 _BAND_WORDS = {"low": "a little", "med": "clearly", "high": "strongly"}
 _MEMORY_RENDER_CHARS = 120
@@ -51,6 +59,8 @@ _DEFAULT_DRIVES_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "drives.json")
 _DEFAULT_ENVIRONMENT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "environment.json")
+_DEFAULT_TOOLS_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "tools.json")
 
 
 def _has_cue(lowered_text: str, cues) -> bool:
@@ -101,6 +111,14 @@ def _context_hint(context: ConversationContext, user_text: str,
     return " Context: " + " ".join(parts)
 
 
+def _preview_args(args) -> str:
+    """Short deterministic preview: "k=v" pairs, sorted keys, <=80 chars."""
+    text = " ".join(f"{k}={v}" for k, v in sorted((args or {}).items()))
+    if len(text) > 80:
+        text = text[:80] + "…"
+    return text
+
+
 class Carrot:
     def __init__(self, *, state, personality, classifier, appraisal,
                  selector, llm, decay_cfg, buffer=None,
@@ -108,6 +126,7 @@ class Carrot:
                  memory_store=None, extractor=None,
                  drive_store=None, drives_config=None,
                  environment_probe=None, environment_config=None,
+                 tools_config=None,
                  time_fn=None):
         self.state = state
         self.personality = personality
@@ -132,6 +151,11 @@ class Carrot:
         self.drives_config = drives_config
         self.last_drive_pull: str | None = None
         self.session_grants: dict[str, bool] = {}
+        self.last_tool_calls: deque[ToolCall] = deque(maxlen=20)
+        if tools_config is None:
+            # Config is required: a missing file is a hard error here.
+            tools_config = ToolsConfig.load(_DEFAULT_TOOLS_CONFIG_PATH)
+        self.tools_config = tools_config
         self.environment_probe = (environment_probe
                                   if environment_probe is not None
                                   else MockEnvironmentProbe())
@@ -262,13 +286,47 @@ class Carrot:
         # 5d. Per-turn drive pull, computed once for Phase 4/5 consumers.
         self.last_drive_pull = drive_pull(drives, self.drives_config)
 
-        # 6. LLM renders wording only. Its output never re-enters state.
-        reply = self.llm.generate(
-            system=self._system_prompt(behavior, ctx, str(text), recalled,
-                                       drive_pull=self.last_drive_pull,
-                                       environment=self.last_environment),
-            history=self.buffer.history_for_llm(),
-            user=str(text))
+        # 6. LLM renders wording, with at most one tool round-trip.
+        # The second reply (if any) is final and never parsed for tools.
+        system = self._system_prompt(behavior, ctx, str(text), recalled,
+                                     drive_pull=self.last_drive_pull,
+                                     environment=self.last_environment)
+        history = self.buffer.history_for_llm()
+        user_str = str(text)
+        reply = self.llm.generate(system=system, history=history,
+                                  user=user_str)
+        request = parse_tool_request(reply)
+        if request is not None:
+            decision = decide(request, self.tools_config,
+                              self.session_grants)
+            if decision.allowed:
+                result = execute(request, self.tools_config)
+                tool_result_text = result.output if result.ok \
+                    else f"(error: {result.error})"
+                allowed = True
+            else:
+                tool_result_text = \
+                    f"(not permitted: {decision.reason})"
+                allowed = False
+            self.last_tool_calls.append(
+                ToolCall(
+                    tool=request.name,
+                    args_preview=_preview_args(request.args),
+                    ok=(allowed and result.ok if allowed else False),
+                    allowed=allowed,
+                    ts=self._now(),
+                )
+            )
+            extended_history = history + [
+                {"role": "carrot", "content": reply},
+                {"role": "user",
+                 "content": f"[Tool {request.name} result: "
+                            f"{tool_result_text}]"},
+            ]
+            reply = self.llm.generate(system=system,
+                                      history=extended_history,
+                                      user=user_str)
+            # Second reply is final -- never parsed for tool requests.
 
         self.buffer.add("user", str(text))
         self.buffer.add("carrot", reply)
