@@ -14,6 +14,13 @@ from . import mood as mood_mod
 from .behavior import Behavior
 from .classifier import InteractionEvent, _INSULT_CUES, _REPAIR_CUES
 from .context import ConversationContext, derive_context
+from .drives import (
+    DrivesConfig,
+    DriveStore,
+    apply_satisfaction,
+    drive_pull,
+    update_rise,
+)
 from .memory import DeterministicExtractor, Memory, MemoryStore
 
 _BAND_WORDS = {"low": "a little", "med": "clearly", "high": "strongly"}
@@ -23,6 +30,10 @@ _MEMORY_RENDER_CHARS = 120
 # default memory file lives next to it. Tests and callers pass an
 # explicit store instead.
 _DEFAULT_STATE_DIR = Path(__file__).resolve().parents[1] / "state"
+# Same convention for config: <project>/config/drives.json. Absolute so
+# behavior never depends on the process working directory.
+_DEFAULT_DRIVES_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "drives.json")
 
 
 def _has_cue(lowered_text: str, cues) -> bool:
@@ -69,6 +80,7 @@ class Carrot:
                  selector, llm, decay_cfg, buffer=None,
                  absence_threshold_s: float = 21600.0,
                  memory_store=None, extractor=None,
+                 drive_store=None, drives_config=None,
                  time_fn=None):
         self.state = state
         self.personality = personality
@@ -84,6 +96,14 @@ class Carrot:
                                               / "memories.json"))
         self.extractor = (extractor if extractor is not None
                           else DeterministicExtractor())
+        if drive_store is None:
+            drive_store = DriveStore(_DEFAULT_STATE_DIR / "drives.json")
+        self.drive_store = drive_store
+        if drives_config is None:
+            # Config is required: a missing file is a hard error here.
+            drives_config = DrivesConfig.load(_DEFAULT_DRIVES_CONFIG_PATH)
+        self.drives_config = drives_config
+        self.last_drive_pull: str | None = None
         self.last_behavior: Behavior = Behavior("normal", "low")
         self.last_event: InteractionEvent | None = None
         self.last_context = None
@@ -138,6 +158,11 @@ class Carrot:
         # 1. Background drift toward baselines (applied THROUGH the state).
         self.state.apply_decay(elapsed, self.decay_cfg)
 
+        # 1b. Rise drives on the same elapsed; store is source of truth.
+        drives = self.drive_store.load()
+        drives = update_rise(drives, elapsed,
+                             self.drives_config.rise_per_hour)
+
         # 2. Absence -> return is a background event, appraised like any other.
         if elapsed >= self.absence_threshold_s:
             hours = elapsed / 3600.0
@@ -162,6 +187,16 @@ class Carrot:
             intent.deltas,
             {"event": event.type, "reason": intent.reason, "ts": now})
 
+        # 4b. Satisfy drives from the classified event; persist rise and
+        # satisfaction together in one atomic write.
+        drives = apply_satisfaction(
+            drives,
+            event.type,
+            self.drives_config.presence_satisfaction,
+            self.drives_config.event_satisfaction,
+        )
+        self.drive_store.save(drives)
+
         # 5. Derived mood + behavior (read-only over state).
         self.state.set_mood(mood_mod.derive(self.state.emotions,
                                             self.state.mood))
@@ -176,6 +211,9 @@ class Carrot:
             now=self._now())
         # 5c. Extract candidate facts from the live turn only.
         self._store_candidates(str(text))
+
+        # 5d. Per-turn drive pull, computed once for Phase 4/5 consumers.
+        self.last_drive_pull = drive_pull(drives, self.drives_config)
 
         # 6. LLM renders wording only. Its output never re-enters state.
         reply = self.llm.generate(

@@ -14,6 +14,7 @@ from carrot.conversation import ConversationBuffer
 from carrot.emotions import EmotionState
 from carrot.llm import MockLLM
 from carrot.memory import MemoryStore
+from carrot.drives import DriveStore, DrivesConfig
 from carrot.personality import Personality
 from tests.conftest import ROOT
 from tests.test_classifier import StubSemanticClassifier
@@ -33,15 +34,22 @@ class FakeTime:
         self.t += seconds
 
 
-def make_carrot(personality=None, start=None, memory_store=None):
+def make_carrot(personality=None, start=None, memory_store=None,
+                drive_store=None):
     clock = start or FakeTime()
     llm = MockLLM()
     if memory_store is None:
-        # Isolated per-instance store: the abstract default would point
-        # at the real state dir. Kept alive via the returned instance.
+        # Isolated per-instance stores: the abstract defaults would
+        # point at the real state dir. Kept alive via the instance.
         tmpdir = tempfile.TemporaryDirectory(prefix="carrot-test-mem-")
     else:
         tmpdir = None
+    if drive_store is None:
+        memdir = tempfile.TemporaryDirectory(prefix="carrot-test-drv-")
+        drive_store = DriveStore(Path(memdir.name) / "drives.json",
+                                 time_fn=clock)
+    else:
+        memdir = None
     carrot = Carrot(
         state=EmotionState(),
         personality=personality or Personality.load(
@@ -57,11 +65,15 @@ def make_carrot(personality=None, start=None, memory_store=None):
                       else MemoryStore(
                           Path(tmpdir.name) / "memories.json",
                           time_fn=clock)),
+        drive_store=drive_store,
+        drives_config=DrivesConfig.load(
+            str(ROOT / "config" / "drives.json")),
         time_fn=clock,
     )
     llm._behavior_getter = lambda: carrot.last_behavior
     carrot.clock = clock
     carrot._tmp_memdir = tmpdir
+    carrot._tmp_drvdir = memdir
     return carrot
 
 
