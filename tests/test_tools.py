@@ -13,9 +13,11 @@ from carrot.tools import (
     ToolRequest,
     ToolResult,
     ToolsConfig,
+    decide,
     parse_tool_request,
 )
 from tests.conftest import ROOT
+from tests.test_scenarios import make_carrot
 
 
 def test_value_types_frozen():
@@ -197,3 +199,110 @@ def test_tools_module_boundary():
             elif node.level > 0 and mod in banned:
                 offenders.append(mod)
     assert offenders == []
+
+
+def _tools_cfg(enabled=None):
+    return ToolsConfig(
+        enabled={"read_file": True, "open_url": True}
+        if enabled is None else dict(enabled),
+        read_file_dirs=(), open_url_domains=(),
+        max_file_bytes=4096, max_iterations=2)
+
+
+def test_decide_unknown_tool():
+    assert decide(ToolRequest("rm_rf", {}), _tools_cfg(), {}) == \
+        Decision(False, "unknown tool")
+
+
+def test_decide_config_disabled_overrides_grant():
+    cfg = _tools_cfg(enabled={"read_file": False, "open_url": True})
+    assert decide(ToolRequest("read_file", {"path": "a.txt"}), cfg,
+                  {"read_file": True}) == Decision(False, "disabled")
+
+
+def test_decide_no_session_grant():
+    assert decide(ToolRequest("read_file", {"path": "a.txt"}),
+                  _tools_cfg(), {}) == Decision(False, "not permitted")
+
+
+def test_decide_session_revoke():
+    assert decide(ToolRequest("read_file", {"path": "a.txt"}),
+                  _tools_cfg(), {"read_file": False}) == \
+        Decision(False, "not permitted")
+
+
+def test_decide_disabled_beats_missing_grant():
+    cfg = _tools_cfg(enabled={"read_file": False, "open_url": True})
+    assert decide(ToolRequest("read_file", {}), cfg, {}) == \
+        Decision(False, "disabled")
+
+
+def test_decide_allow_with_grant():
+    assert decide(ToolRequest("read_file", {"path": "a.txt"}),
+                  _tools_cfg(), {"read_file": True}) == \
+        Decision(True, None)
+
+
+def test_decide_allow_both_tools():
+    cfg, grants = _tools_cfg(), {"read_file": True, "open_url": True}
+    assert decide(ToolRequest("read_file", {}), cfg, grants) == \
+        Decision(True, None)
+    assert decide(ToolRequest("open_url", {"url": "https://x.example"}),
+                  cfg, grants) == Decision(True, None)
+
+
+def test_decide_does_not_mutate_grants():
+    grants = {"read_file": True}
+    decide(ToolRequest("read_file", {}), _tools_cfg(), grants)
+    assert grants == {"read_file": True}
+
+
+def test_decide_does_not_mutate_config():
+    cfg = _tools_cfg()
+    snapshot = (dict(cfg.enabled), cfg.read_file_dirs,
+                cfg.open_url_domains, cfg.max_file_bytes,
+                cfg.max_iterations)
+    decide(ToolRequest("read_file", {}), cfg, {"read_file": True})
+    assert (dict(cfg.enabled), cfg.read_file_dirs, cfg.open_url_domains,
+            cfg.max_file_bytes, cfg.max_iterations) == snapshot
+
+
+def test_decide_deterministic():
+    cfg = _tools_cfg()
+    first = decide(ToolRequest("read_file", {"path": "a.txt"}), cfg,
+                   {"read_file": True})
+    second = decide(ToolRequest("read_file", {"path": "a.txt"}), cfg,
+                    {"read_file": True})
+    assert first == second == Decision(True, None)
+
+
+def test_session_grants_initialised_empty():
+    assert make_carrot().session_grants == {}
+
+
+def test_session_grants_not_persisted():
+    first = make_carrot()
+    first.session_grants["read_file"] = True
+    assert make_carrot().session_grants == {}
+
+
+def test_session_grants_not_in_state():
+    assert "session_grants" not in make_carrot().state.to_dict()
+
+
+def test_decide_config_checked_before_session():
+    cfg = _tools_cfg(enabled={"read_file": False, "open_url": True})
+    assert decide(ToolRequest("read_file", {}), cfg, {}) == \
+        Decision(False, "disabled")
+
+
+def test_decide_unknown_checked_before_config():
+    cfg = _tools_cfg(enabled={"rm_rf": False, "read_file": True})
+    assert decide(ToolRequest("rm_rf", {}), cfg, {}) == \
+        Decision(False, "unknown tool")
+
+
+def test_decide_ignores_args():
+    assert decide(ToolRequest("read_file", {"path": "/etc/passwd"}),
+                  _tools_cfg(), {"read_file": True}) == \
+        Decision(True, None)

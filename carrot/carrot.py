@@ -131,6 +131,7 @@ class Carrot:
             drives_config = DrivesConfig.load(_DEFAULT_DRIVES_CONFIG_PATH)
         self.drives_config = drives_config
         self.last_drive_pull: str | None = None
+        self.session_grants: dict[str, bool] = {}
         self.environment_probe = (environment_probe
                                   if environment_probe is not None
                                   else MockEnvironmentProbe())

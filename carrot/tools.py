@@ -143,3 +143,25 @@ class ToolsConfig:
         return cls(enabled=clean_enabled, read_file_dirs=tuple(dirs),
                    open_url_domains=tuple(domains),
                    max_file_bytes=max_bytes, max_iterations=max_iter)
+
+
+def decide(
+    request: ToolRequest,
+    config: ToolsConfig,
+    session_grants: Mapping[str, bool],
+) -> Decision:
+    """Coarse permission check at the tool-category level.
+
+    Deny unknown tools, config-disabled tools, and anything without an
+    explicit session grant (absent and revoked both read as "no", so the
+    LLM cannot distinguish them). Fine-grained argument validation is a
+    later phase; request.args is never inspected here.
+    """
+    if request.name not in TOOLS:
+        return Decision(False, "unknown tool")
+    if config.enabled.get(request.name) is not True:
+        return Decision(False, "disabled")
+    grants = session_grants or {}
+    if grants.get(request.name) is not True:
+        return Decision(False, "not permitted")
+    return Decision(True, None)
