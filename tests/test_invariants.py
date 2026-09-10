@@ -73,6 +73,26 @@ def test_no_autonomy_primitives():
 # Slice 6 boundary: perception is read-only. `ctypes` is permitted only in
 # `carrot/environment_win32.py` (the Windows probe, read-only use only);
 # no other module may import it or call WinDLL/CDLL/windll.
+# The accessor ban above is a *permission* check (who may reach the DLLs).
+# The write-API ban below is an *action* check: no module, including the
+# sanctioned one, may call a known write primitive. Together they make the
+# test name honest. Full write-protection is Slice 8's job; this is a
+# static tripwire, not a comprehensive policy.
+_WRITE_APIS = frozenset({
+    "SetForegroundWindow", "SendInput", "keybd_event", "mouse_event",
+    "CreateFileW", "WriteFile", "ShellExecuteW", "ShellExecuteExW",
+    "CreateProcessW", "TerminateProcess", "RegSetValueExW",
+    "SystemParametersInfoW",
+})
+
+
+def _find_write_calls(tree):
+    """Attribute names from the write-API ban list, whatever receiver."""
+    return [node.attr for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr in _WRITE_APIS]
+
+
 def test_no_os_write_primitives():
     importers = []
     callers = []
@@ -95,10 +115,21 @@ def test_no_os_write_primitives():
                     value = node.value
                     if isinstance(value, ast.Name) and value.id == "ctypes":
                         callers.append(path.name)
-    assert all(name == "environment_win32.py" for name in importers), \
-        importers
     assert all(name == "environment_win32.py" for name in callers), \
         callers
+    writes = []
+    for path in (ROOT / "carrot").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        writes.extend(
+            (path.name, hit) for hit in _find_write_calls(tree))
+    assert writes == []
+
+
+def test_write_api_ban_has_teeth():
+    bad = ast.parse("import ctypes\nuser32.SetForegroundWindow(0)\n")
+    assert _find_write_calls(bad) == ["SetForegroundWindow"]
+    good = ast.parse("hwnd = user32.GetForegroundWindow()\n")
+    assert _find_write_calls(good) == []
 
 
 def test_state_does_not_grow_without_bound(tmp_path):
