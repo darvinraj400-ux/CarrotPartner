@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
+from carrot.carrot import _TOOLS_BLOCK
 from carrot.drives import DriveState, DriveStore
 from carrot.environment import MockEnvironmentProbe, RawObservation
 
@@ -574,3 +575,54 @@ def test_env_block_present_when_only_env(tmp_path):
     c.process_turn("12345 !!!")
     system = c.llm.last_system
     assert system.endswith("Context: They're in the terminal.")
+
+
+def test_tools_block_pinned():
+    """The Tools: block is a stable capability advertisement.
+    Its exact wording is pinned so any change is a deliberate diff."""
+    assert _TOOLS_BLOCK == 'Tools you may use: read_file (read a file I approve), open_url (open a link I approve). To use one, reply with exactly a fenced block in this form: tool:NAME {"arg": "value"}'
+
+
+def test_tools_block_present_every_turn():
+    c = make_carrot()
+    for text in ("hello there", "how are you?", "tell me more"):
+        c.process_turn(text)
+        c.clock.advance(5)
+        assert "Tools you may use:" in c.llm.last_system
+
+
+def test_tools_block_before_memories():
+    c = make_carrot()
+    c.process_turn("my name is Alice")
+    c.clock.advance(5)
+    c.process_turn("what was my name")
+    system = c.llm.last_system
+    assert "Memories:" in system
+    assert system.index("Tools you may use:") < system.index("Memories:")
+
+
+def test_tools_block_before_context():
+    c = make_carrot()
+    c.process_turn("that joke was funny lol")
+    c.clock.advance(5)
+    c.process_turn("tell me more")
+    system = c.llm.last_system
+    assert "Context:" in system
+    assert system.index("Tools you may use:") < system.index("Context:")
+
+
+def test_tools_block_skeleton_clean():
+    skeleton = re.sub(r'"[^"]*"', "", _TOOLS_BLOCK)
+    assert re.search(r"\d", skeleton) is None
+    lowered = skeleton.lower()
+    for word in ["happiness", "sadness", "anger", "hurt", "affection",
+                 "excitement", "embarrassment", "content", "low",
+                 "tender", "tense", "bright", "sensitivity", "playfulness",
+                 "stoicism", "shyness", "pride", "warmth", "mood"]:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_tools_block_tool_names_digit_free():
+    assert "read_file" in _TOOLS_BLOCK
+    assert "open_url" in _TOOLS_BLOCK
+    assert re.search(r"\d", _TOOLS_BLOCK) is None

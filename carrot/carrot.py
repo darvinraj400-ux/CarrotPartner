@@ -42,6 +42,12 @@ from .tools import (
 _BAND_WORDS = {"low": "a little", "med": "clearly", "high": "strongly"}
 _MEMORY_RENDER_CHARS = 120
 
+_TOOLS_BLOCK = (
+    "Tools you may use: read_file (read a file I approve), "
+    "open_url (open a link I approve). To use one, reply with exactly "
+    'a fenced block in this form: tool:NAME {"arg": "value"}'
+)
+
 # Drive-pull sentences: static strings only, never parameterized by
 # drive values (no numbers may enter the prompt through this path).
 _DRIVE_PULL_SENTENCES = {
@@ -179,16 +185,19 @@ class Carrot:
                          recalled=(), drive_pull=None,
                          environment=EMPTY_SNAPSHOT) -> str:
         degree = _BAND_WORDS.get(behavior.band, "a little")
-        return (
+        base = (
             f"{self.personality.sketch()} "
             f"Right now you are feeling {degree} {behavior.name}. "
             "Stay in character. Never mention numbers, levels, meters, "
             "internal state, or how your emotions work. Keep replies short "
             "and natural, like a person texting. Mirror the user's language "
             "and emoji naturally; do not force emoji."
-            + _memories_block(recalled)
-            + _context_hint(context, user_text, drive_pull, environment)
         )
+        tools = " " + _TOOLS_BLOCK
+        memories = _memories_block(recalled)
+        context_hint = _context_hint(context, user_text, drive_pull,
+                                     environment)
+        return base + tools + memories + context_hint
 
     @staticmethod
     def _initial_importance(cand, user_text: str) -> float:
