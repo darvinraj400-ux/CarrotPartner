@@ -17,6 +17,14 @@ WARMTH_WEIGHT = 0.10
 _AFF_THRESHOLD_LO = 0.4
 _AFF_THRESHOLD_HI = 0.9
 
+# Patience shifts the frustration gates: higher patience raises the bar,
+# so it takes more anger to read as annoyed or frustrated.
+PATIENCE_WEIGHT = 0.10
+
+
+def _patience_threshold(base: float, patience: float) -> float:
+    return max(0.4, min(0.9, base + (patience - 0.5) * PATIENCE_WEIGHT))
+
 BEHAVIORS = ("normal", "playful", "excited", "sad", "annoyed", "sulking",
              "quiet", "shy", "affectionate", "embarrassed", "curious",
              "proud", "frustrated")
@@ -92,9 +100,12 @@ class BehaviorSelector:
         if e["sadness"] >= t("sad", 0.55):
             return Behavior("sad", _band(e["sadness"]))
 
-        if anger >= t("annoyed", 0.55):
+        if anger >= _patience_threshold(t("annoyed", 0.55),
+                                          personality.patience):
             return Behavior("annoyed", _band(anger))
-        if anger >= t("frustrated_anger", 0.4) and state.energy < t("low_energy", 0.35):
+        if anger >= _patience_threshold(t("frustrated_anger", 0.4),
+                                        personality.patience
+                                        ) and state.energy < t("low_energy", 0.35):
             return Behavior("frustrated", _band(anger))
 
         exc, hap, aff = e["excitement"], e["happiness"], e["affection"]

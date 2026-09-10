@@ -2,7 +2,7 @@
 import pytest
 
 from carrot.appraisal import Appraisal
-from carrot.behavior import BEHAVIORS, BehaviorSelector
+from carrot.behavior import BEHAVIORS, BehaviorSelector, _patience_threshold
 from carrot.classifier import InteractionEvent
 from carrot.context import derive_context
 from carrot.conversation import ConversationBuffer
@@ -160,3 +160,86 @@ def test_warmth_extremes_stay_sane():
         got = sel.pick(EmotionState(), Personality(warmth=warmth),
                        _blank(), "")
         assert got.name in BEHAVIORS
+
+
+def _pat(patience, **traits):
+    return Personality(patience=patience, **traits)
+
+
+def test_patience_high_raises_frustrated_threshold():
+    sel = BehaviorSelector({})
+    tense = EmotionState(emotions={"anger": 0.42}, energy=0.2)
+    assert sel.pick(tense, _pat(0.5), _blank(), "").name == "frustrated"
+    assert sel.pick(tense, _pat(0.9), _blank(), "").name == "quiet"
+
+
+def test_patience_low_lowers_frustrated_threshold():
+    # NOTE: the locked [0.4, 0.9] clamp sits exactly on the default
+    # frustrated base (0.4), so with default config low patience cannot
+    # lower it further (0.36 clamps back to 0.4). This test therefore
+    # pins the modulation mechanism with a raised configured base,
+    # using the same config-lookup path as production.
+    sel = BehaviorSelector({"frustrated_anger": 0.7, "annoyed": 0.8})
+    tense = EmotionState(emotions={"anger": 0.68}, energy=0.2)
+    assert sel.pick(tense, _pat(0.5), _blank(), "").name == "quiet"
+    assert sel.pick(tense, _pat(0.1), _blank(), "").name == "frustrated"
+
+
+def test_patience_high_raises_annoyed_threshold():
+    sel = BehaviorSelector({})
+    tense = EmotionState(emotions={"anger": 0.57}, energy=0.7)
+    assert sel.pick(tense, _pat(0.5), _blank(), "").name == "annoyed"
+    assert sel.pick(tense, _pat(0.9), _blank(), "").name == "normal"
+
+
+def test_patience_low_lowers_annoyed_threshold():
+    sel = BehaviorSelector({})
+    tense = EmotionState(emotions={"anger": 0.53}, energy=0.7)
+    assert sel.pick(tense, _pat(0.5), _blank(), "").name == "normal"
+    assert sel.pick(tense, _pat(0.1), _blank(), "").name == "annoyed"
+
+
+def test_patience_threshold_clamps():
+    assert _patience_threshold(0.4, 0.0) == 0.4
+    assert abs(_patience_threshold(0.55, 1.0) - 0.6) < 1e-9
+    sel = BehaviorSelector({})
+    low = EmotionState(emotions={"anger": 0.42}, energy=0.2)
+    assert sel.pick(low, _pat(0.0), _blank(), "").name == "frustrated"
+    high = EmotionState(emotions={"anger": 0.57}, energy=0.7)
+    assert sel.pick(high, _pat(1.0), _blank(), "").name == "normal"
+
+
+def test_patience_leaves_other_gates_alone():
+    sel = BehaviorSelector({})
+    proud_state = EmotionState(
+        emotions={"happiness": 0.6},
+        recent_causes=[{"event": "achievement"}])
+    cases = [
+        (EmotionState(emotions={"happiness": 0.6, "affection": 0.7}),
+         {}, "", _blank(), "affectionate"),
+        (proud_state, {"pride": 0.8}, "", _blank(), "proud"),
+        (EmotionState(emotions={"excitement": 0.7}), {}, "", _blank(),
+         "playful"),
+        (EmotionState(emotions={"hurt": 0.65, "anger": 0.4}),
+         {"stoicism": 0.9}, "", _blank(), "sulking"),
+        (EmotionState(emotions={"sadness": 0.7}), {}, "", _blank(), "sad"),
+        (EmotionState(), {}, "are you there?", _blank(), "curious"),
+        (EmotionState(), {}, "", _blank(), "normal"),
+    ]
+    for state, traits, text, ctx, expected in cases:
+        calm = sel.pick(state, _pat(1.0, **traits), ctx, text).name
+        edgy = sel.pick(state, _pat(0.0, **traits), ctx, text).name
+        assert calm == edgy == expected, (expected, calm, edgy)
+
+
+def test_patience_default_is_neutral():
+    assert _patience_threshold(0.55, 0.5) == 0.55
+    assert _patience_threshold(0.4, 0.5) == 0.4
+    sel = BehaviorSelector({})
+    states = [EmotionState(),
+              EmotionState(emotions={"anger": 0.7}),
+              EmotionState(emotions={"hurt": 0.65, "anger": 0.4})]
+    for state in states:
+        assert sel.pick(state, Personality(),
+                        _blank(), "").name == sel.pick(
+            state, Personality(patience=0.5), _blank(), "").name
