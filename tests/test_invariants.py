@@ -91,10 +91,24 @@ def test_hint_playful_present_and_absent():
 
 
 def test_hint_repair_present_and_absent():
-    assert "apologizing for something they said" in _system_after(
+    assert "walking back what they said" in _system_after(
         "you are useless.", "I'm kidding.")
-    assert "apologizing for something they said" not in _system_after(
+    assert "walking back what they said" not in _system_after(
         "you are useless.", "whatever.")
+
+
+def test_repair_hint_is_backpedal_not_apology():
+    system = _system_after("you are useless.", "I'm kidding.")
+    assert "walking back" in system
+    assert "apologizing" not in system
+
+
+def test_plain_apology_gets_no_repair_hint():
+    system = _system_after("you are useless.", "I'm sorry.")
+    assert "walking back" not in system
+    assert "apologizing" not in system
+    # Topics still render; only the repair sentence is absent.
+    assert "Recent topics: useless" in system
 
 
 def test_hint_topics_present_alphabetic_only():

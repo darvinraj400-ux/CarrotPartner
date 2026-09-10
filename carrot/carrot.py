@@ -32,7 +32,7 @@ def _context_hint(context: ConversationContext, user_text: str) -> str:
     if context.playful_frame:
         parts.append("The conversation has been playful.")
     if context.recent_harshness and _has_cue(lowered, _REPAIR_CUES):
-        parts.append("The user seems to be apologizing for something "
+        parts.append("The user seems to be walking back what "
                      "they said.")
     if context.recent_topics:
         parts.append("Recent topics: " + ", ".join(context.recent_topics))
