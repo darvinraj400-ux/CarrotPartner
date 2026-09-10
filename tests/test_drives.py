@@ -4,14 +4,19 @@ import dataclasses
 import json
 import sys
 
+import pytest
+
 from carrot.drives import (
     DRIVE_CEIL,
     DRIVE_FLOOR,
     DRIVE_SCHEMA_VERSION,
     DriveState,
     DriveStore,
+    DrivesConfig,
+    advance,
     apply_satisfaction,
     clamp_level,
+    drive_pull,
     update_rise,
 )
 from tests.conftest import ROOT
@@ -207,3 +212,133 @@ def test_save_shape_has_version_and_levels(tmp_path):
     assert data["social"] == 0.3
     assert data["novelty"] == 0.4
     assert set(data) == {"version", "social", "novelty"}
+
+
+def _cfg(**overrides):
+    base = {
+        "rise_per_hour": {"social": 0.05, "novelty": 0.03},
+        "pull_threshold": 0.6,
+        "presence_satisfaction": {"social": -0.01},
+        "event_satisfaction": {
+            "compliment": {"social": -0.15},
+            "neutral": {"social": -0.02},
+            "insult": {},
+        },
+    }
+    base.update(overrides)
+    return base
+
+
+def _write_config(tmp_path, data, name="drives.json"):
+    path = tmp_path / name
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return str(path)
+
+
+def test_config_loads_valid():
+    cfg = DrivesConfig.load(str(ROOT / "config" / "drives.json"))
+    assert cfg.pull_threshold == 0.6
+    assert cfg.rise_per_hour["social"] == 0.05
+    assert cfg.event_satisfaction["insult"] == {}
+
+
+def test_config_missing_file_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        DrivesConfig.load(str(tmp_path / "nope.json"))
+
+
+def test_config_malformed_raises(tmp_path):
+    path = tmp_path / "bad.json"
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ValueError):
+        DrivesConfig.load(str(path))
+
+
+def test_config_missing_threshold_defaults(tmp_path):
+    data = _cfg()
+    del data["pull_threshold"]
+    assert DrivesConfig.load(_write_config(tmp_path, data)).pull_threshold \
+        == 0.6
+
+
+def test_config_invalid_threshold_raises(tmp_path):
+    with pytest.raises(ValueError):
+        DrivesConfig.load(_write_config(tmp_path, _cfg(pull_threshold=1.5)))
+
+
+def test_config_missing_presence_defaults(tmp_path):
+    data = _cfg()
+    del data["presence_satisfaction"]
+    assert DrivesConfig.load(
+        _write_config(tmp_path, data)).presence_satisfaction == {}
+
+
+def test_config_frozen():
+    cfg = DrivesConfig.load(str(ROOT / "config" / "drives.json"))
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.pull_threshold = 0.9
+
+
+def test_advance_rise_then_satisfaction(tmp_path):
+    cfg = DrivesConfig.load(_write_config(tmp_path, _cfg()))
+    got = advance(DriveState(), 7200.0, "compliment", cfg)
+    assert got.social == pytest.approx(0.0)
+    assert got.novelty == pytest.approx(0.06)
+
+
+def test_advance_is_pure(tmp_path):
+    cfg = DrivesConfig.load(_write_config(tmp_path, _cfg()))
+    before = DriveState(social=0.4, novelty=0.2)
+    advance(before, 3600.0, "compliment", cfg)
+    assert before == DriveState(social=0.4, novelty=0.2)
+
+
+def test_advance_unknown_event(tmp_path):
+    cfg = DrivesConfig.load(_write_config(tmp_path, _cfg()))
+    got = advance(DriveState(), 3600.0, "something_random", cfg)
+    assert got.social == pytest.approx(0.05 - 0.01)
+    assert got.novelty == pytest.approx(0.03)
+
+
+def test_advance_zero_elapsed_neutral(tmp_path):
+    cfg = DrivesConfig.load(_write_config(tmp_path, _cfg()))
+    got = advance(DriveState(), 0, "neutral", cfg)
+    assert got.social == 0.0
+    assert got.novelty == 0.0
+
+
+def test_advance_zero_elapsed_insult(tmp_path):
+    cfg = DrivesConfig.load(_write_config(tmp_path, _cfg()))
+    got = advance(DriveState(), 0, "insult", cfg)
+    assert got.social == 0.0
+    assert got.novelty == 0.0
+
+
+def test_pull_both_below(tmp_path):
+    cfg = DrivesConfig.load(_write_config(tmp_path, _cfg()))
+    assert drive_pull(DriveState(social=0.4, novelty=0.3), cfg) is None
+
+
+def test_pull_social_above(tmp_path):
+    cfg = DrivesConfig.load(_write_config(tmp_path, _cfg()))
+    assert drive_pull(DriveState(social=0.7, novelty=0.3), cfg) == "social"
+
+
+def test_pull_novelty_above(tmp_path):
+    cfg = DrivesConfig.load(_write_config(tmp_path, _cfg()))
+    assert drive_pull(DriveState(social=0.3, novelty=0.7), cfg) == "novelty"
+
+
+def test_pull_tie_goes_by_drives_order(tmp_path):
+    cfg = DrivesConfig.load(_write_config(tmp_path, _cfg()))
+    assert drive_pull(DriveState(social=0.7, novelty=0.7), cfg) == "social"
+
+
+def test_pull_boundary_inclusive(tmp_path):
+    cfg = DrivesConfig.load(_write_config(tmp_path, _cfg()))
+    assert drive_pull(DriveState(social=0.6, novelty=0.0), cfg) == "social"
+
+
+def test_pull_just_below(tmp_path):
+    cfg = DrivesConfig.load(_write_config(tmp_path, _cfg()))
+    assert drive_pull(DriveState(social=0.59, novelty=0.0), cfg) is None
