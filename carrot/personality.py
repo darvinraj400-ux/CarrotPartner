@@ -1,4 +1,9 @@
-"""Static personality traits. Never mutated at runtime in Slice 1."""
+"""Static personality traits. Never mutated at runtime.
+
+personality_id is currently write-only metadata stored in state: no
+runtime behavior reads it back. Future slices may make it load-bearing
+for profile selection.
+"""
 from __future__ import annotations
 
 import json

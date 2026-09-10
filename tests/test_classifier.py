@@ -34,6 +34,14 @@ def test_personality_load_and_sketch(tmp_path):
         Personality.load(str(bad))
 
 
+def test_sketch_vocabulary_pinned():
+    # Any sketch wording change must be a deliberate diff, not an
+    # accident: pin the exact output for carrot-default-v1.
+    assert Personality().sketch() == (
+        "Carrot is playful, warm, expressive, outgoing, humble, "
+        "sensitive.")
+
+
 def _ctx(*texts):
     buf = ConversationBuffer()
     for t in texts:
