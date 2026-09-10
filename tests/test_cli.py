@@ -1,4 +1,5 @@
 """Phase-5 tests: /ctx handler, last_context retention, help text."""
+import json
 import re
 import sys
 
@@ -13,6 +14,10 @@ from carrot.cli import (
     format_dbg,
     format_drives,
     format_env,
+    format_calls,
+    format_tools,
+    handle_allow,
+    handle_deny,
     format_mem_debug,
     format_memories,
     handle_ctx,
@@ -21,6 +26,7 @@ from carrot.cli import (
 )
 from carrot.context import derive_context
 from carrot.drives import DriveState, DriveStore, DrivesConfig
+from carrot.tools import ToolsConfig
 from carrot.environment import (
     EMPTY_SNAPSHOT,
     MockEnvironmentProbe,
@@ -501,3 +507,161 @@ def test_build_carrot_non_windows_mock(tmp_path, monkeypatch):
     _staged_root(tmp_path, monkeypatch)
     carrot = build_carrot()
     assert isinstance(carrot.environment_probe, MockEnvironmentProbe)
+
+
+def _tool_cli_carrot(tmp_path=None):
+    c = make_carrot()
+    c.tools_config = ToolsConfig(
+        enabled={"read_file": True, "open_url": True},
+        read_file_dirs=(str(tmp_path),) if tmp_path is not None else (),
+        open_url_domains=("example.com",),
+        max_file_bytes=4096, max_iterations=2)
+    return c
+
+
+def _scripted_tool_carrot(tmp_path, replies):
+    c = _tool_cli_carrot(tmp_path)
+    calls = {"n": 0}
+
+    def generate(*, system, history, user):
+        calls["n"] += 1
+        return replies[min(calls["n"] - 1, len(replies) - 1)]
+
+    c.llm.generate = generate
+    c.calls = calls
+    return c
+
+
+def test_tools_fresh_state():
+    out = format_tools(make_carrot())
+    assert "read_file: enabled (session: none)" in out
+    assert "open_url: enabled (session: none)" in out
+
+
+def test_tools_after_allow():
+    c = make_carrot()
+    assert handle_allow(c, "read_file") == "granted: read_file"
+    assert "read_file: enabled (session: granted)" in format_tools(c)
+
+
+def test_tools_after_deny():
+    c = make_carrot()
+    assert handle_deny(c, "open_url") == "denied: open_url"
+    assert "open_url: enabled (session: denied)" in format_tools(c)
+
+
+def test_tools_deterministic_order():
+    out = format_tools(make_carrot())
+    assert out.index("read_file:") < out.index("open_url:")
+
+
+def test_tools_no_mutation():
+    c = _tool_cli_carrot()
+    before_state = c.state.to_dict()
+    before_grants = dict(c.session_grants)
+    format_tools(c)
+    assert c.state.to_dict() == before_state
+    assert c.session_grants == before_grants
+
+
+def test_tools_no_digits():
+    assert re.search(r"\d", format_tools(make_carrot())) is None
+
+
+def test_calls_empty():
+    assert format_calls(make_carrot()) == "(no tool calls yet)"
+
+
+def test_calls_allowed_ok_entry(tmp_path):
+    target = tmp_path / "a.txt"
+    target.write_text("hello", encoding="utf-8")
+    req = "```tool:read_file\n" + json.dumps({"path": str(target)}) + "\n```"
+    c = _scripted_tool_carrot(tmp_path, [req, "Here it is."])
+    c.session_grants["read_file"] = True
+    c.process_turn("please read the file")
+    out = format_calls(c)
+    assert "read_file allowed=yes ok=yes args=path=" in out
+
+
+def test_calls_denied_entry(tmp_path):
+    req = "```tool:read_file\n" + json.dumps({"path": "x.txt"}) + "\n```"
+    c = _scripted_tool_carrot(tmp_path, [req, "I can't."])
+    c.process_turn("please read the file")
+    out = format_calls(c)
+    assert "read_file allowed=no ok=no args=path=" in out
+
+
+def test_calls_no_mutation(tmp_path):
+    target = tmp_path / "a.txt"
+    target.write_text("hello", encoding="utf-8")
+    req = "```tool:read_file\n" + json.dumps({"path": str(target)}) + "\n```"
+    c = _scripted_tool_carrot(tmp_path, [req, "done."])
+    c.session_grants["read_file"] = True
+    c.process_turn("please read the file")
+    before_state = c.state.to_dict()
+    before_grants = dict(c.session_grants)
+    format_calls(c)
+    assert c.state.to_dict() == before_state
+    assert c.session_grants == before_grants
+
+
+def test_allow_valid_tool():
+    c = make_carrot()
+    assert handle_allow(c, "read_file") == "granted: read_file"
+    assert c.session_grants["read_file"] is True
+
+
+def test_allow_unknown_tool():
+    c = make_carrot()
+    assert handle_allow(c, "rm_rf") == "unknown tool: rm_rf"
+    assert c.session_grants == {}
+
+
+def test_allow_empty_arg():
+    c = make_carrot()
+    assert handle_allow(c, "") == "usage: /allow <tool>"
+    assert handle_allow(c, "   ") == "usage: /allow <tool>"
+    assert c.session_grants == {}
+
+
+def test_allow_already_granted():
+    c = make_carrot()
+    assert handle_allow(c, "read_file") == "granted: read_file"
+    assert handle_allow(c, "read_file") == "already granted"
+
+
+def test_deny_valid_tool():
+    c = make_carrot()
+    assert handle_deny(c, "read_file") == "denied: read_file"
+    assert c.session_grants["read_file"] is False
+
+
+def test_deny_unknown_tool():
+    c = make_carrot()
+    assert handle_deny(c, "rm_rf") == "unknown tool: rm_rf"
+    assert c.session_grants == {}
+
+
+def test_deny_empty_arg():
+    c = make_carrot()
+    assert handle_deny(c, "") == "usage: /deny <tool>"
+    assert handle_deny(c, "   ") == "usage: /deny <tool>"
+    assert c.session_grants == {}
+
+
+def test_deny_idempotent():
+    c = make_carrot()
+    assert handle_deny(c, "read_file") == "denied: read_file"
+    assert handle_deny(c, "read_file") == "denied: read_file"
+
+
+def test_help_lists_all_four_tool_commands():
+    for cmd in ("/tools", "/calls", "/allow", "/deny"):
+        assert cmd in HELP_TEXT
+
+
+def test_help_first_lines_unchanged():
+    assert "  /dbg inner state (dev only) | /ctx context (dev only) | " \
+        in HELP_TEXT
+    assert "  /memories list memories | /mem memory details (dev only) | " \
+        in HELP_TEXT

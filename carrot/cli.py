@@ -9,6 +9,7 @@ from pathlib import Path
 from .drives import drive_pull
 from .environment import MockEnvironmentProbe
 from .memory import MAX_MEMORY_TEXT_CHARS, Memory
+from .tools import TOOLS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,7 +17,9 @@ HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "/quit exit\n"
              "  /memories list memories | /mem memory details (dev only) | "
              "/remember <text> save memory | /forget <substring> drop matches | "
-             "/drives show drives | /env show environment")
+             "/drives show drives | /env show environment\n"
+             "  /tools list tools | /calls recent tool calls | "
+             "/allow <tool> allow this session | /deny <tool> deny this session")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
@@ -85,6 +88,54 @@ def handle_forget(carrot, arg: str) -> str:
     if removed == 0:
         return "no matches"
     return f"forgot {removed}"
+
+
+def format_tools(carrot) -> str:
+    """User-facing tool list with config + session state. Reads only."""
+    lines = []
+    for name in TOOLS:
+        enabled = "enabled" if carrot.tools_config.enabled.get(name) \
+            else "disabled"
+        grant = carrot.session_grants.get(name)
+        session = "granted" if grant is True else \
+            "denied" if grant is False else "none"
+        lines.append(f"{name}: {enabled} (session: {session})")
+    return "\n".join(lines)
+
+
+def format_calls(carrot) -> str:
+    """Recent tool-call log. Reads only: previews, no timestamps."""
+    if not carrot.last_tool_calls:
+        return "(no tool calls yet)"
+    lines = []
+    for call in carrot.last_tool_calls:
+        allowed = "yes" if call.allowed else "no"
+        ok = "yes" if call.ok else "no"
+        lines.append(f"{call.tool} allowed={allowed} ok={ok} "
+                     f"args={call.args_preview}")
+    return "\n".join(lines)
+
+
+def handle_allow(carrot, arg: str) -> str:
+    tool = str(arg or "").strip()
+    if not tool:
+        return "usage: /allow <tool>"
+    if tool not in TOOLS:
+        return f"unknown tool: {tool}"
+    if carrot.session_grants.get(tool) is True:
+        return "already granted"
+    carrot.session_grants[tool] = True
+    return f"granted: {tool}"
+
+
+def handle_deny(carrot, arg: str) -> str:
+    tool = str(arg or "").strip()
+    if not tool:
+        return "usage: /deny <tool>"
+    if tool not in TOOLS:
+        return f"unknown tool: {tool}"
+    carrot.session_grants[tool] = False
+    return f"denied: {tool}"
 
 
 def _drive_band(level: float, threshold: float) -> str:
@@ -225,6 +276,20 @@ def main() -> None:
             continue
         if line.strip() == "/env":
             print(format_env(carrot))
+            continue
+        if line.strip() == "/tools":
+            print(format_tools(carrot))
+            continue
+        if line.strip() == "/calls":
+            print(format_calls(carrot))
+            continue
+        if (line.strip() == "/allow"
+                or line.strip().startswith("/allow ")):
+            print(handle_allow(carrot, line.strip()[len("/allow"):]))
+            continue
+        if (line.strip() == "/deny"
+                or line.strip().startswith("/deny ")):
+            print(handle_deny(carrot, line.strip()[len("/deny"):]))
             continue
         if (line.strip() == "/remember"
                 or line.strip().startswith("/remember ")):
