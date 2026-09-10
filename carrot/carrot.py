@@ -11,10 +11,34 @@ import time
 
 from . import mood as mood_mod
 from .behavior import Behavior
-from .classifier import InteractionEvent
-from .context import derive_context
+from .classifier import InteractionEvent, _INSULT_CUES, _REPAIR_CUES
+from .context import ConversationContext, derive_context
 
 _BAND_WORDS = {"low": "a little", "med": "clearly", "high": "strongly"}
+
+
+def _has_cue(lowered_text: str, cues) -> bool:
+    return any(cue in lowered_text for cue in cues)
+
+
+def _context_hint(context: ConversationContext, user_text: str) -> str:
+    lowered = str(user_text or "").strip().lower()
+    answered = (bool(lowered) and not lowered.endswith("?")
+                and not _has_cue(lowered, _REPAIR_CUES)
+                and not _has_cue(lowered, _INSULT_CUES))
+    parts = []
+    if context.pending_question and answered:
+        parts.append("The user is answering your earlier question.")
+    if context.playful_frame:
+        parts.append("The conversation has been playful.")
+    if context.recent_harshness and _has_cue(lowered, _REPAIR_CUES):
+        parts.append("The user seems to be apologizing for something "
+                     "they said.")
+    if context.recent_topics:
+        parts.append("Recent topics: " + ", ".join(context.recent_topics))
+    if not parts:
+        return ""
+    return " Context: " + " ".join(parts)
 
 
 class Carrot:
@@ -38,7 +62,9 @@ class Carrot:
             buffer = ConversationBuffer()
         self.buffer = buffer
 
-    def _system_prompt(self, behavior: Behavior) -> str:
+    def _system_prompt(self, behavior: Behavior,
+                         context: ConversationContext,
+                         user_text: str) -> str:
         degree = _BAND_WORDS.get(behavior.band, "a little")
         return (
             f"{self.personality.sketch()} "
@@ -47,6 +73,7 @@ class Carrot:
             "internal state, or how your emotions work. Keep replies short "
             "and natural, like a person texting. Mirror the user's language "
             "and emoji naturally; do not force emoji."
+            + _context_hint(context, user_text)
         )
 
     def process_turn(self, text: str, now: float | None = None) -> str:
@@ -88,7 +115,7 @@ class Carrot:
 
         # 6. LLM renders wording only. Its output never re-enters state.
         reply = self.llm.generate(
-            system=self._system_prompt(behavior),
+            system=self._system_prompt(behavior, ctx, str(text)),
             history=self.buffer.history_for_llm(),
             user=str(text))
 

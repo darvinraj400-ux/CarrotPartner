@@ -1,5 +1,6 @@
 """Invariants: stdlib-only runtime, bounded growth, LLM-output isolation."""
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -62,3 +63,78 @@ def test_values_always_clamped_after_fuzz():
         c.clock.advance(3)
         for v in list(c.state.emotions.values()) + [c.state.energy]:
             assert 0.0 <= v <= 1.0
+
+
+def _system_after(*lines):
+    c = make_carrot()
+    for line in lines:
+        c.process_turn(line)
+        c.clock.advance(5)
+    return c.llm.last_system
+
+
+def test_hint_pending_present():
+    system = _system_after("are you awake?", "yes, I'm here")
+    assert "answering your earlier question" in system
+
+
+def test_hint_pending_absent_filler():
+    system = _system_after("just stopping by.", "anyway.", "noted.")
+    assert "answering your earlier question" not in system
+
+
+def test_hint_playful_present_and_absent():
+    assert "The conversation has been playful." in _system_after(
+        "that joke was funny lol", "tell me more")
+    assert "The conversation has been playful." not in _system_after(
+        "the report is due.")
+
+
+def test_hint_repair_present_and_absent():
+    assert "apologizing for something they said" in _system_after(
+        "you are useless.", "I'm kidding.")
+    assert "apologizing for something they said" not in _system_after(
+        "you are useless.", "whatever.")
+
+
+def test_hint_topics_present_alphabetic_only():
+    system = _system_after("gardening club playoff", "tell me more")
+    assert "Recent topics: gardening, club, playoff" in system
+    tail = system.split("Recent topics: ", 1)[1]
+    assert re.fullmatch(r"[A-Za-z, ]+", tail)
+
+
+def test_hint_block_omitted_when_nothing_holds():
+    system = _system_after("12345 !!!")
+    assert "Recent topics:" not in system
+    assert "Context:" not in system
+
+
+def test_no_digits_across_hint_scenarios():
+    scripts = [
+        ("are you awake?", "yes, I'm here"),
+        ("that joke was funny lol", "tell me more"),
+        ("you are useless.", "I'm kidding."),
+        ("gardening club playoff", "tell me more"),
+    ]
+    for script in scripts:
+        assert re.search(r"\d", _system_after(*script)) is None, script
+
+
+def test_no_state_names_in_system():
+    system = _system_after(
+        "are you awake?", "yes, I'm here", "that joke was funny lol",
+        "you are useless.", "I'm kidding.")
+    assert "Context:" in system  # several hints render at once
+    lowered = system.lower()
+    emotions = ["happiness", "sadness", "anger", "hurt", "affection",
+                "excitement", "embarrassment"]
+    moods = ["content", "low", "tender", "tense", "bright"]
+    traits = ["sensitivity", "playfulness", "stoicism", "shyness",
+              "pride", "warmth"]
+    for word in emotions + moods + traits + ["mood"]:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    # Note: the frozen Slice-1 base prompt contains the generic word
+    # "emotions" ("how your emotions work"); only specific state names
+    # above are forbidden. Likewise "playful"/"warm" adjectives live in
+    # the personality sketch by design; only noun trait names are barred.
