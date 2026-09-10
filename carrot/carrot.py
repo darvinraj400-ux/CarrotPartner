@@ -231,6 +231,9 @@ class Carrot:
                     created_ts=now, last_recalled_ts=now)):
                 seen.add(key)
 
+    # Slice 9: process_turn is only ever called from the CLI REPL loop.
+    # Away-mode actuation lives in cli._run_away_mode and does not call
+    # process_turn (no synthetic turn, no buffer write).
     def process_turn(self, text: str, now: float | None = None) -> str:
         now = float(self._now() if now is None else now)
         elapsed = now - self.state.last_seen if self.state.last_seen else 0.0

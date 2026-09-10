@@ -4,6 +4,8 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
 from carrot.carrot import _TOOLS_BLOCK
@@ -134,6 +136,77 @@ def _env_win32_imports(tree):
 
     walk(tree, False)
     return guarded, unguarded
+
+
+# Slice 9 boundary: exactly one unbounded loop is permitted, the CLI REPL.
+# Away-mode actuation is bounded (max_n iterations, then exit). Any
+# second while-True is a scheduler in disguise.
+def test_no_unbounded_loops():
+    offenders = []
+    for path in (ROOT / "carrot").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        stack = [(tree, None)]
+        while stack:
+            node, func = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                func = node.name
+            if isinstance(node, ast.While):
+                test = node.test
+                is_true = isinstance(test, ast.Constant) and test.value in (
+                    True, 1)
+                if is_true and not (path.name == "cli.py"
+                                    and func == "main"):
+                    offenders.append((path.name, func, node.lineno))
+            for child in ast.iter_child_nodes(node):
+                stack.append((child, func))
+    assert offenders == []
+
+
+def test_initiative_module_is_pure():
+    path = ROOT / "carrot" / "initiative.py"
+    if not path.exists():
+        pytest.skip("initiative.py lands in Phase 1")
+    offenders = []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if parts[0] == "carrot" and (
+                        len(parts) < 2 or parts[1] != "drives"):
+                    offenders.append(a.name)
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            parts = mod.split(".")
+            if node.level == 0:
+                if parts[0] == "carrot" and (
+                        len(parts) < 2 or parts[1] != "drives"):
+                    offenders.append(mod)
+            elif mod != "drives":
+                offenders.append("." + mod if mod else ".")
+    assert offenders == []
+
+
+def test_generate_callers_restricted():
+    offenders = []
+    for path in (ROOT / "carrot").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        stack = [(tree, None)]
+        while stack:
+            node, func = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                func = node.name
+            if isinstance(node, ast.Call):
+                called = node.func
+                if isinstance(called, ast.Attribute) \
+                        and called.attr == "generate":
+                    if path.name not in ("carrot.py", "cli.py"):
+                        offenders.append((path.name, func))
+                    elif path.name == "cli.py" and func != "_run_away_mode":
+                        offenders.append((path.name, func))
+            for child in ast.iter_child_nodes(node):
+                stack.append((child, func))
+    assert offenders == []
 
 
 def test_no_os_write_primitives():
