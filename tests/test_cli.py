@@ -9,6 +9,7 @@ from carrot.cli import (
     format_ctx,
     format_dbg,
     format_drives,
+    format_env,
     format_mem_debug,
     format_memories,
     handle_ctx,
@@ -17,6 +18,7 @@ from carrot.cli import (
 )
 from carrot.context import derive_context
 from carrot.drives import DriveState, DriveStore, DrivesConfig
+from carrot.environment import MockEnvironmentProbe, RawObservation
 from carrot.memory import MAX_MEMORIES, Memory, MemoryStore
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
@@ -366,3 +368,98 @@ def test_last_seen_untouched_by_launch(tmp_path, monkeypatch):
     relaunched = build_carrot(time_fn=lambda: 9999.0)
     assert relaunched.state.last_seen == seen
     assert relaunched.state.session_count == 2
+
+
+class _CountingProbe:
+    def __init__(self, observation):
+        self._observation = observation
+        self.calls = 0
+
+    def observe(self):
+        self.calls += 1
+        return self._observation
+
+
+def _env_carrot_cli(observations):
+    c = make_carrot()
+    c.environment_probe = MockEnvironmentProbe(observations)
+    return c
+
+
+def test_env_fresh_state():
+    c = make_carrot()
+    out = format_env(c)
+    assert "app: unknown" in out
+    assert "idle: False" in out
+    assert "observed: no" in out
+
+
+def test_env_with_app():
+    c = _env_carrot_cli([RawObservation("cmd.exe", False)])
+    c.process_turn("hello there")
+    out = format_env(c)
+    assert "app: terminal" in out
+    assert "observed: yes" in out
+
+
+def test_env_with_idle():
+    c = _env_carrot_cli([RawObservation(None, True)])
+    c.process_turn("hello there")
+    out = format_env(c)
+    assert "idle: True" in out
+    assert "observed: yes" in out
+
+
+def test_env_no_digits():
+    c = _env_carrot_cli([RawObservation("cmd.exe", True)])
+    c.process_turn("hello there")
+    assert re.search(r"\d", format_env(c)) is None
+    fresh = format_env(make_carrot())
+    assert re.search(r"\d", fresh) is None
+
+
+def test_env_no_mutation(tmp_path):
+    path = tmp_path / "d.json"
+    store = DriveStore(path)
+    store.save(DriveState(social=0.8, novelty=0.2))
+    c = make_carrot(drive_store=store)
+    c.process_turn("hello there")
+    before_state = c.state.to_dict()
+    before_drives = store.load()
+    mtime = path.stat().st_mtime_ns
+    format_env(c)
+    assert c.state.to_dict() == before_state
+    assert store.load() == before_drives
+    assert path.stat().st_mtime_ns == mtime
+
+
+def test_env_does_not_call_probe():
+    probe = _CountingProbe(RawObservation("cmd.exe", False))
+    c = make_carrot()
+    c.environment_probe = probe
+    c.process_turn("hello there")
+    assert probe.calls == 1
+    format_env(c)
+    assert probe.calls == 1
+
+
+def test_dbg_includes_environment_line():
+    c = _env_carrot_cli([RawObservation("cmd.exe", False)])
+    c.process_turn("hello there")
+    out = format_dbg(c)
+    assert "environment: app=" in out
+    assert "idle=" in out
+
+
+def test_dbg_shows_env_and_existing_content():
+    c = make_carrot()
+    c.process_turn("hello there")
+    out = format_dbg(c)
+    assert "mood=" in out
+    assert "behavior=" in out
+    assert "happiness" in out
+    assert "social=" in out
+
+
+def test_help_lists_env():
+    assert "/env" in HELP_TEXT

@@ -15,7 +15,7 @@ HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "/quit exit\n"
              "  /memories list memories | /mem memory details (dev only) | "
              "/remember <text> save memory | /forget <substring> drop matches | "
-             "/drives show drives")
+             "/drives show drives | /env show environment")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
@@ -104,6 +104,18 @@ def format_drives(drive_store, drives_config) -> str:
             f"pull: {pull if pull is not None else 'none'}")
 
 
+def format_env(carrot) -> str:
+    """User-facing environment view. Reads only: labels, no floats."""
+    snapshot = carrot.last_environment
+    if snapshot is None:
+        return "app: unknown\nidle: False\nobserved: no"
+    app = snapshot.app_noun if snapshot.app_noun is not None else "unknown"
+    observed = snapshot.app_noun is not None or snapshot.idle
+    return (f"app: {app}\n"
+            f"idle: {snapshot.idle}\n"
+            f"observed: {'yes' if observed else 'no'}")
+
+
 def format_dbg(carrot) -> str:
     """Debug inner-state view. Floats permitted (dev surface)."""
     s = carrot.state
@@ -114,6 +126,11 @@ def format_dbg(carrot) -> str:
         lines.append(f"    {k}={v:.2f}")
     drives = carrot.drive_store.load()
     lines.append(f"  social={drives.social:.2f} novelty={drives.novelty:.2f}")
+    env = carrot.last_environment
+    app = env.app_noun if env is not None and env.app_noun is not None \
+        else None
+    idle = env.idle if env is not None else False
+    lines.append(f"  environment: app={app} idle={idle}")
     return "\n".join(lines)
 
 def _load_json(name: str) -> dict:
@@ -191,6 +208,9 @@ def main() -> None:
             continue
         if line.strip() == "/drives":
             print(format_drives(carrot.drive_store, carrot.drives_config))
+            continue
+        if line.strip() == "/env":
+            print(format_env(carrot))
             continue
         if (line.strip() == "/remember"
                 or line.strip().startswith("/remember ")):
