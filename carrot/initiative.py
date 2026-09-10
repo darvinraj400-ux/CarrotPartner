@@ -8,10 +8,13 @@ parameter slots document the Slice 10/11 seams.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Mapping
+from typing import Callable, Mapping
 
 from .drives import DriveState
 from .environment import EnvironmentSnapshot
@@ -129,3 +132,126 @@ def should_initiate(
         if now - last >= cooldown:
             return InitiateDecision(reason)
     return None
+
+
+INITIATIVE_SCHEMA_VERSION = 1
+MAX_INITIATIVE_BYTES = 4096
+
+
+@dataclass(frozen=True)
+class InitiativeState:
+    per_reason_last_fire: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        raw = self.per_reason_last_fire or {}
+        if not isinstance(raw, Mapping):
+            raise ValueError("per_reason_last_fire must be a mapping")
+        clean = {}
+        for key, value in raw.items():
+            if not isinstance(key, str):
+                raise ValueError("fire keys must be strings")
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                raise ValueError("fire values must be numeric")
+            if isinstance(value, bool) or number < 0:
+                raise ValueError("fire values must be non-negative floats")
+            clean[key] = number
+        object.__setattr__(self, "per_reason_last_fire",
+                           MappingProxyType(dict(clean)))
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    # Deliberate duplication of the sibling-store pattern: initiative
+    # persistence must not depend on state_store.py, memory.py, or
+    # permissions.py, so the four files (and their quarantine/version
+    # schemes) stay independent.
+    parent = Path(path).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+class InitiativeStore:
+    def __init__(self, path: Path,
+                 time_fn: Callable[[], float] = time.time):
+        self.path = Path(path)
+        self._time_fn = time_fn or time.time
+
+    def _quarantine(self) -> None:
+        try:
+            dest = self.path.parent / (
+                f"quarantine-initiative-{int(self._time_fn())}.json")
+            os.replace(self.path, dest)
+        except OSError:
+            pass
+
+    def load(self) -> InitiativeState:
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return InitiativeState(per_reason_last_fire={})
+        except (UnicodeDecodeError, OSError):
+            self._quarantine()
+            return InitiativeState(per_reason_last_fire={})
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            self._quarantine()
+            return InitiativeState(per_reason_last_fire={})
+        if (not isinstance(data, dict) or "version" not in data
+                or "per_reason_last_fire" not in data):
+            self._quarantine()
+            return InitiativeState(per_reason_last_fire={})
+        try:
+            version = int(data["version"])
+        except (TypeError, ValueError):
+            self._quarantine()
+            return InitiativeState(per_reason_last_fire={})
+        if version != INITIATIVE_SCHEMA_VERSION:
+            return InitiativeState(per_reason_last_fire={})
+        entries = data["per_reason_last_fire"]
+        if not isinstance(entries, dict):
+            self._quarantine()
+            return InitiativeState(per_reason_last_fire={})
+        clean = {}
+        for key, value in entries.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, bool) or number < 0:
+                continue
+            clean[key] = number
+        return InitiativeState(per_reason_last_fire=clean)
+
+    def save(self, state: InitiativeState) -> None:
+        if not isinstance(state, InitiativeState):
+            raise ValueError("can only save InitiativeState objects")
+        payload = {"version": INITIATIVE_SCHEMA_VERSION,
+                   "per_reason_last_fire": dict(state.per_reason_last_fire)}
+        encoded = (json.dumps(payload, ensure_ascii=False, indent=2)
+                   + "\n").encode("utf-8")
+        if len(encoded) > MAX_INITIATIVE_BYTES:
+            raise ValueError("initiative state exceeds size cap")
+        _atomic_write_json(self.path, payload)
+
+    def record_fire(self, reason: str, now: float) -> InitiativeState:
+        current = self.load()
+        merged = dict(current.per_reason_last_fire)
+        merged[str(reason)] = float(now)
+        state = InitiativeState(per_reason_last_fire=merged)
+        self.save(state)
+        return state

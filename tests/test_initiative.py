@@ -1,6 +1,8 @@
 """Slice 9 Phase-1 tests: initiative decision function (pure logic)."""
+import ast
 import dataclasses
 import json
+import sys
 
 import pytest
 
@@ -11,6 +13,8 @@ from carrot.initiative import (
     REASONS,
     InitiateDecision,
     InitiativeConfig,
+    InitiativeState,
+    InitiativeStore,
     should_initiate,
 )
 from tests.conftest import ROOT
@@ -193,3 +197,151 @@ def test_ignores_snapshot():
     second = should_initiate(DriveState(), 0, EMPTY_SNAPSHOT, fired, NOW,
                              cfg)
     assert first == second == InitiateDecision("session-open")
+
+
+def _istore(tmp_path, name="initiative.json"):
+    return InitiativeStore(tmp_path / name,
+                           time_fn=lambda: 1700000000.0)
+
+
+def test_state_frozen():
+    state = InitiativeState(per_reason_last_fire={})
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        state.policy_rev = 9
+
+
+def test_state_mapping_immutable():
+    state = InitiativeState(per_reason_last_fire={"session-open": 1.0})
+    with pytest.raises(TypeError):
+        state.per_reason_last_fire["session-open"] = 2.0
+
+
+def test_state_rejects_bad_key():
+    with pytest.raises(ValueError):
+        InitiativeState(per_reason_last_fire={1: 2.0})
+
+
+def test_state_rejects_bad_value():
+    with pytest.raises(ValueError):
+        InitiativeState(per_reason_last_fire={"x": -1.0})
+    with pytest.raises(ValueError):
+        InitiativeState(per_reason_last_fire={"x": "y"})
+
+
+def test_store_missing_file(tmp_path):
+    loaded = _istore(tmp_path).load()
+    assert dict(loaded.per_reason_last_fire) == {}
+    assert not (tmp_path / "initiative.json").exists()
+
+
+def test_store_round_trip(tmp_path):
+    from carrot.initiative import InitiativeState
+
+    store = _istore(tmp_path)
+    store.save(InitiativeState(
+        per_reason_last_fire={"session-open": 100.0}))
+    assert store.load() == InitiativeState(
+        per_reason_last_fire={"session-open": 100.0})
+
+
+def test_store_corrupt_json(tmp_path):
+    p = tmp_path / "initiative.json"
+    p.write_text("{not json", encoding="utf-8")
+    assert dict(_istore(tmp_path).load().per_reason_last_fire) == {}
+    assert not p.exists()
+    assert len(list(tmp_path.glob("quarantine-initiative-*.json"))) == 1
+
+
+def test_store_unparseable_version(tmp_path):
+    p = tmp_path / "initiative.json"
+    p.write_text('{"version": "x", "per_reason_last_fire": {}}',
+                 encoding="utf-8")
+    assert dict(_istore(tmp_path).load().per_reason_last_fire) == {}
+    assert len(list(tmp_path.glob("quarantine-initiative-*.json"))) == 1
+
+
+def test_store_unknown_version(tmp_path):
+    p = tmp_path / "initiative.json"
+    p.write_text('{"version": 2, "per_reason_last_fire":'
+                 ' {"session-open": 5.0}}', encoding="utf-8")
+    assert dict(_istore(tmp_path).load().per_reason_last_fire) == {}
+    assert list(tmp_path.glob("quarantine-initiative-*.json")) == []
+    assert p.exists()
+
+
+def test_store_wrong_top_level_shape(tmp_path):
+    p = tmp_path / "initiative.json"
+    p.write_text('{"version": 1, "per_reason_last_fire": "not a dict"}',
+                 encoding="utf-8")
+    assert dict(_istore(tmp_path).load().per_reason_last_fire) == {}
+    assert len(list(tmp_path.glob("quarantine-initiative-*.json"))) == 1
+
+
+def test_store_per_entry_fail_soft(tmp_path):
+    p = tmp_path / "initiative.json"
+    p.write_text('{"version": 1, "per_reason_last_fire":'
+                 ' {"long-absence": 100.0, "bad": "yes", "neg": -1.0}}',
+                 encoding="utf-8")
+    loaded = _istore(tmp_path).load()
+    assert dict(loaded.per_reason_last_fire) == {"long-absence": 100.0}
+    assert list(tmp_path.glob("quarantine-initiative-*.json")) == []
+
+
+def test_store_missing_field(tmp_path):
+    p = tmp_path / "initiative.json"
+    p.write_text('{"version": 1}', encoding="utf-8")
+    assert dict(_istore(tmp_path).load().per_reason_last_fire) == {}
+
+
+def test_record_fire_first(tmp_path):
+    store = _istore(tmp_path)
+    state = store.record_fire("long-absence", 1000.0)
+    assert dict(state.per_reason_last_fire) == {"long-absence": 1000.0}
+    assert dict(store.load().per_reason_last_fire) == \
+        {"long-absence": 1000.0}
+
+
+def test_record_fire_same_reason_overwrites(tmp_path):
+    store = _istore(tmp_path)
+    store.record_fire("long-absence", 1000.0)
+    state = store.record_fire("long-absence", 2000.0)
+    assert dict(state.per_reason_last_fire) == {"long-absence": 2000.0}
+
+
+def test_record_fire_different_reason_accumulates(tmp_path):
+    store = _istore(tmp_path)
+    store.record_fire("long-absence", 1000.0)
+    state = store.record_fire("session-open", 2000.0)
+    assert dict(state.per_reason_last_fire) == {"long-absence": 1000.0,
+                                                "session-open": 2000.0}
+
+
+def test_record_fire_returns_persisted_state(tmp_path):
+    store = _istore(tmp_path)
+    state = store.record_fire("session-open", 1000.0)
+    assert state == store.load()
+
+
+def test_save_size_cap(tmp_path):
+    store = _istore(tmp_path)
+    huge = {f"reason-{i}": float(i) for i in range(2000)}
+    with pytest.raises(ValueError):
+        store.save(InitiativeState(per_reason_last_fire=huge))
+    assert not (tmp_path / "initiative.json").exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_initiative_module_still_clean():
+    tree = ast.parse((ROOT / "carrot" / "initiative.py").read_text(
+        encoding="utf-8"))
+    mods = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            mods.add((node.module or "").split(".")[0])
+    allowed = set(sys.stdlib_module_names) | {"carrot"}
+    assert mods <= allowed, mods
+    src = (ROOT / "carrot" / "initiative.py").read_text(encoding="utf-8")
+    assert "from .emotions import" not in src
+    assert "from .permissions import" not in src
