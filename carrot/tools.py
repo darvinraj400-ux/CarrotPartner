@@ -10,6 +10,7 @@ import os
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Callable, Mapping
 
 TOOLS = ("read_file", "open_url")
@@ -87,6 +88,7 @@ class ToolsConfig:
     open_url_domains: tuple[str, ...]  # lowercased, scheme-less
     max_file_bytes: int
     max_iterations: int  # tool loop cap
+    levels: Mapping[str, int]  # tool name -> 0..4; unlisted tools read as 4
 
     @classmethod
     def load(cls, path: str | Path) -> "ToolsConfig":
@@ -139,11 +141,23 @@ class ToolsConfig:
                 raise ValueError("bad max_iterations")
             if max_iter not in (1, 2, 3):
                 raise ValueError("max_iterations must be 1, 2, or 3")
-        except (TypeError, ValueError) as exc:
+            raw_levels = data.get("levels", {})
+            if not isinstance(raw_levels, dict):
+                raise ValueError("levels must be an object")
+            clean_levels = {}
+            for key, level in raw_levels.items():
+                if (isinstance(level, bool) or not isinstance(level, int)
+                        or level not in (0, 1, 2, 3, 4)):
+                    raise ValueError(f"bad level for {key!r}")
+                clean_levels[str(key)] = level
+            for tool in TOOLS:
+                clean_levels.setdefault(tool, 4)
+        except (TypeError, ValueError, AttributeError) as exc:
             raise ValueError(str(exc)) from exc
         return cls(enabled=clean_enabled, read_file_dirs=tuple(dirs),
                    open_url_domains=tuple(domains),
-                   max_file_bytes=max_bytes, max_iterations=max_iter)
+                   max_file_bytes=max_bytes, max_iterations=max_iter,
+                   levels=MappingProxyType(clean_levels))
 
 
 # Slice 8: signature grows only by defaulted parameters

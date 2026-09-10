@@ -14,7 +14,7 @@ def _tool_carrot(tmp_path, replies, max_bytes=4096):
         enabled={"read_file": True, "open_url": True},
         read_file_dirs=(str(tmp_path),),
         open_url_domains=("example.com",),
-        max_file_bytes=max_bytes, max_iterations=2)
+        max_file_bytes=max_bytes, max_iterations=2, levels={})
     calls = {"n": 0, "histories": [], "users": []}
 
     def generate(*, system, history, user):

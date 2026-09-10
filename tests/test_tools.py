@@ -208,7 +208,7 @@ def _tools_cfg(enabled=None):
         enabled={"read_file": True, "open_url": True}
         if enabled is None else dict(enabled),
         read_file_dirs=(), open_url_domains=(),
-        max_file_bytes=4096, max_iterations=2)
+        max_file_bytes=4096, max_iterations=2, levels={})
 
 
 def test_decide_unknown_tool():
@@ -326,7 +326,7 @@ def _allow_cfg(tmp_path, sub="notes", domains=("example.com",),
         enabled={"read_file": True, "open_url": True},
         read_file_dirs=(str(notes),),
         open_url_domains=tuple(domains),
-        max_file_bytes=max_bytes, max_iterations=2), notes
+        max_file_bytes=max_bytes, max_iterations=2, levels={}), notes
 
 
 def _granted():
@@ -407,7 +407,8 @@ def test_read_file_tilde_expansion(tmp_path, monkeypatch):
     cfg_home = ToolsConfig(
         enabled={"read_file": True, "open_url": True},
         read_file_dirs=(str(tmp_path),),
-        open_url_domains=(), max_file_bytes=4096, max_iterations=2)
+        open_url_domains=(), max_file_bytes=4096, max_iterations=2,
+        levels={})
     assert decide(ToolRequest("read_file", {"path": "~/notes/a.txt"}),
                   cfg_home, _granted()) == Decision(True, None)
 
@@ -566,7 +567,7 @@ def test_execute_never_touches_real_launcher():
     cfg = ToolsConfig(
         enabled={"read_file": True, "open_url": True},
         read_file_dirs=(), open_url_domains=("example.com",),
-        max_file_bytes=4096, max_iterations=2)
+        max_file_bytes=4096, max_iterations=2, levels={})
     result = execute(
         ToolRequest("open_url", {"url": "https://example.com/"}), cfg,
         launcher=lambda url: True)
@@ -578,3 +579,54 @@ def test_execute_unknown_tool(tmp_path):
     cfg, _notes = _allow_cfg(tmp_path)
     assert execute(ToolRequest("rm_rf", {}), cfg) == \
         ToolResult(ok=False, output="", error="unknown tool")
+
+
+def _levels_base(**overrides):
+    base = {"enabled": {"read_file": True, "open_url": True},
+            "levels": {"read_file": 1, "open_url": 2},
+            "read_file_dirs": [], "open_url_domains": [],
+            "max_file_bytes": 4096, "max_iterations": 2}
+    base.update(overrides)
+    return base
+
+
+def test_levels_loads_valid():
+    cfg = ToolsConfig.load(str(ROOT / "config" / "tools.json"))
+    assert cfg.levels["read_file"] == 1
+    assert cfg.levels["open_url"] == 2
+
+
+def test_levels_missing_defaults_all_four(tmp_path):
+    data = {"enabled": {"read_file": True, "open_url": True},
+            "read_file_dirs": [], "open_url_domains": [],
+            "max_file_bytes": 4096, "max_iterations": 2}
+    path = tmp_path / "tools.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    cfg = ToolsConfig.load(str(path))
+    assert cfg.levels["read_file"] == 4
+    assert cfg.levels["open_url"] == 4
+
+
+def test_levels_out_of_range(tmp_path):
+    for bad in (5, -1):
+        data = _levels_base(levels={"read_file": bad, "open_url": 2})
+        path = tmp_path / f"bad-{bad}.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        with pytest.raises(ValueError):
+            ToolsConfig.load(str(path))
+
+
+def test_levels_non_int(tmp_path):
+    data = _levels_base(levels={"read_file": "1", "open_url": 2})
+    path = tmp_path / "badtype.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError):
+        ToolsConfig.load(str(path))
+
+
+def test_levels_frozen(tmp_path):
+    cfg = ToolsConfig.load(_write_config(tmp_path, _levels_base()))
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.levels = {}
+    with pytest.raises(TypeError):
+        cfg.levels["read_file"] = 9
