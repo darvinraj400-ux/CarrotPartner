@@ -15,9 +15,12 @@ from carrot.cli import (
     format_drives,
     format_env,
     format_calls,
+    format_permissions,
     format_tools,
     handle_allow,
     handle_deny,
+    handle_revoke,
+    handle_revoke_all,
     format_mem_debug,
     format_memories,
     handle_ctx,
@@ -26,7 +29,8 @@ from carrot.cli import (
 )
 from carrot.context import derive_context
 from carrot.drives import DriveState, DriveStore, DrivesConfig
-from carrot.tools import ToolsConfig
+from carrot.tools import ToolsConfig, ToolRequest, decide
+from carrot.permissions import PermissionStore
 from carrot.environment import (
     EMPTY_SNAPSHOT,
     MockEnvironmentProbe,
@@ -543,7 +547,7 @@ def test_tools_fresh_state():
 
 def test_tools_after_allow():
     c = make_carrot()
-    assert handle_allow(c, "read_file") == "granted: read_file"
+    assert handle_allow(c, "read_file") == "granted: read_file (session)"
     assert "read_file: enabled (session: granted)" in format_tools(c)
 
 
@@ -610,7 +614,7 @@ def test_calls_no_mutation(tmp_path):
 
 def test_allow_valid_tool():
     c = make_carrot()
-    assert handle_allow(c, "read_file") == "granted: read_file"
+    assert handle_allow(c, "read_file") == "granted: read_file (session)"
     assert c.session_grants["read_file"] is True
 
 
@@ -622,15 +626,15 @@ def test_allow_unknown_tool():
 
 def test_allow_empty_arg():
     c = make_carrot()
-    assert handle_allow(c, "") == "usage: /allow <tool>"
-    assert handle_allow(c, "   ") == "usage: /allow <tool>"
+    assert handle_allow(c, "") == "usage: /allow <tool> [always]"
+    assert handle_allow(c, "   ") == "usage: /allow <tool> [always]"
     assert c.session_grants == {}
 
 
 def test_allow_already_granted():
     c = make_carrot()
-    assert handle_allow(c, "read_file") == "granted: read_file"
-    assert handle_allow(c, "read_file") == "already granted"
+    assert handle_allow(c, "read_file") == "granted: read_file (session)"
+    assert handle_allow(c, "read_file") == "already granted (session)"
 
 
 def test_deny_valid_tool():
@@ -668,3 +672,193 @@ def test_help_first_lines_unchanged():
         in HELP_TEXT
     assert "  /memories list memories | /mem memory details (dev only) | " \
         in HELP_TEXT
+
+
+def _perm_carrot(tmp_path):
+    store = PermissionStore(tmp_path / "permissions.json")
+    return make_carrot(permission_store=store)
+
+
+def test_permissions_fresh_state():
+    out = format_permissions(make_carrot())
+    assert "read_file: level=1 enabled=yes session=none persistent=none" \
+        in out
+    assert "open_url: level=2 enabled=yes session=none persistent=none" \
+        in out
+
+
+def test_permissions_after_session_grant():
+    c = make_carrot()
+    handle_allow(c, "read_file")
+    out = format_permissions(c)
+    assert "read_file: level=1 enabled=yes session=granted " \
+        "persistent=none" in out
+
+
+def test_permissions_after_always_grant(tmp_path):
+    c = _perm_carrot(tmp_path)
+    assert handle_allow(c, "read_file always") == \
+        "granted: read_file (always)"
+    out = format_permissions(c)
+    assert "session=granted" in out
+    assert "persistent=granted" in out
+
+
+def test_permissions_after_revoke(tmp_path):
+    c = _perm_carrot(tmp_path)
+    handle_allow(c, "read_file always")
+    assert handle_revoke(c, "read_file") == "revoked: read_file"
+    out = format_permissions(c)
+    assert "read_file: level=1 enabled=yes session=denied " \
+        "persistent=none" in out
+
+
+def test_permissions_deterministic(tmp_path):
+    first = _perm_carrot(tmp_path)
+    handle_allow(first, "read_file always")
+    second = _perm_carrot(tmp_path)
+    handle_allow(second, "read_file always")
+    assert format_permissions(first) == format_permissions(second)
+
+
+def test_permissions_no_mutation(tmp_path):
+    c = _perm_carrot(tmp_path)
+    handle_allow(c, "read_file always")
+    before_state = c.state.to_dict()
+    before_grants = dict(c.permission_state.grants)
+    path = tmp_path / "permissions.json"
+    mtime = path.stat().st_mtime_ns
+    format_permissions(c)
+    assert c.state.to_dict() == before_state
+    assert dict(c.permission_state.grants) == before_grants
+    assert path.stat().st_mtime_ns == mtime
+
+
+def test_permissions_digits_present():
+    out = format_permissions(make_carrot())
+    assert re.search(r"\d", out) is not None
+
+
+def test_allow_session_mode(tmp_path):
+    c = _perm_carrot(tmp_path)
+    assert handle_allow(c, "read_file") == "granted: read_file (session)"
+    assert c.session_grants["read_file"] is True
+    assert c.permission_state.grants.get("read_file") is None
+
+
+def test_allow_session_idempotent():
+    c = make_carrot()
+    handle_allow(c, "read_file")
+    assert handle_allow(c, "read_file") == "already granted (session)"
+
+
+def test_allow_always_mode(tmp_path):
+    c = _perm_carrot(tmp_path)
+    assert handle_allow(c, "read_file always") == \
+        "granted: read_file (always)"
+    assert c.session_grants["read_file"] is True
+    assert c.permission_state.grants["read_file"] is True
+
+
+def test_allow_always_persists(tmp_path):
+    first = _perm_carrot(tmp_path)
+    handle_allow(first, "read_file always")
+    second = make_carrot(
+        permission_store=PermissionStore(tmp_path / "permissions.json"))
+    assert second.permission_state.grants["read_file"] is True
+
+
+def test_allow_always_idempotent(tmp_path):
+    c = _perm_carrot(tmp_path)
+    handle_allow(c, "read_file always")
+    assert handle_allow(c, "read_file always") == "already granted (always)"
+
+
+def test_allow_upgrade_session_to_always(tmp_path):
+    c = _perm_carrot(tmp_path)
+    assert handle_allow(c, "read_file") == "granted: read_file (session)"
+    assert handle_allow(c, "read_file always") == \
+        "granted: read_file (always)"
+
+
+def test_allow_unknown_tool_extended():
+    c = make_carrot()
+    assert handle_allow(c, "rm_rf") == "unknown tool: rm_rf"
+
+
+def test_allow_extra_arg():
+    c = make_carrot()
+    assert handle_allow(c, "read_file forever") == \
+        "usage: /allow <tool> [always]"
+    assert c.session_grants == {}
+
+
+def test_allow_too_many_args():
+    c = make_carrot()
+    assert handle_allow(c, "read_file always forever") == \
+        "usage: /allow <tool> [always]"
+    assert c.session_grants == {}
+
+
+def test_revoke_full(tmp_path):
+    c = _perm_carrot(tmp_path)
+    handle_allow(c, "read_file always")
+    assert handle_revoke(c, "read_file") == "revoked: read_file"
+    assert c.session_grants["read_file"] is False
+    assert "read_file" not in c.permission_state.grants
+
+
+def test_revoke_unknown_tool():
+    c = make_carrot()
+    assert handle_revoke(c, "rm_rf") == "unknown tool: rm_rf"
+
+
+def test_revoke_empty_arg():
+    c = make_carrot()
+    assert handle_revoke(c, "") == "usage: /revoke <tool>"
+    assert handle_revoke(c, "   ") == "usage: /revoke <tool>"
+
+
+def test_revoke_idempotent(tmp_path):
+    c = _perm_carrot(tmp_path)
+    assert handle_revoke(c, "read_file") == "revoked: read_file"
+    assert handle_revoke(c, "read_file") == "revoked: read_file"
+
+
+def test_revoke_revokes_access(tmp_path):
+    c = _perm_carrot(tmp_path)
+    c.session_grants["read_file"] = True
+    handle_revoke(c, "read_file")
+    req = ToolRequest("read_file", {"path": str(tmp_path / "a.txt")})
+    assert decide(req, c.tools_config, c.session_grants,
+                  c.permission_state.grants).allowed is False
+
+
+def test_revoke_all_clears_everything(tmp_path):
+    c = _perm_carrot(tmp_path)
+    handle_allow(c, "read_file always")
+    c.session_grants["open_url"] = True
+    assert handle_revoke_all(c) == "revoked all"
+    assert c.session_grants == {}
+    assert dict(c.permission_state.grants) == {}
+
+
+def test_revoke_all_idempotent(tmp_path):
+    c = _perm_carrot(tmp_path)
+    assert handle_revoke_all(c) == "revoked all"
+    assert handle_revoke_all(c) == "revoked all"
+
+
+def test_revoke_all_persists(tmp_path):
+    first = _perm_carrot(tmp_path)
+    handle_allow(first, "read_file always")
+    handle_revoke_all(first)
+    second = make_carrot(
+        permission_store=PermissionStore(tmp_path / "permissions.json"))
+    assert dict(second.permission_state.grants) == {}
+
+
+def test_help_lists_new_permission_commands():
+    for cmd in ("/permissions", "/revoke", "/revoke-all"):
+        assert cmd in HELP_TEXT
+    assert "/allow" in HELP_TEXT

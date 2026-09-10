@@ -19,7 +19,9 @@ HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "/remember <text> save memory | /forget <substring> drop matches | "
              "/drives show drives | /env show environment\n"
              "  /tools list tools | /calls recent tool calls | "
-             "/allow <tool> allow this session | /deny <tool> deny this session")
+             "/allow <tool> allow this session | /deny <tool> deny this session\n"
+             "  /permissions view consents | /allow <tool> [always] grant | "
+             "/revoke <tool> clear consent | /revoke-all clear all")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
@@ -117,15 +119,25 @@ def format_calls(carrot) -> str:
 
 
 def handle_allow(carrot, arg: str) -> str:
-    tool = str(arg or "").strip()
-    if not tool:
-        return "usage: /allow <tool>"
+    parts = str(arg or "").strip().split()
+    if not parts or len(parts) > 2 or (len(parts) == 2
+                                       and parts[1] != "always"):
+        return "usage: /allow <tool> [always]"
+    tool = parts[0]
     if tool not in TOOLS:
         return f"unknown tool: {tool}"
+    if len(parts) == 2:
+        current = carrot.permission_state.grants.get(tool)
+        if current is True and carrot.session_grants.get(tool) is True:
+            return "already granted (always)"
+        carrot.permission_state = carrot.permission_store.set_grant(
+            tool, True)
+        carrot.session_grants[tool] = True
+        return f"granted: {tool} (always)"
     if carrot.session_grants.get(tool) is True:
-        return "already granted"
+        return "already granted (session)"
     carrot.session_grants[tool] = True
-    return f"granted: {tool}"
+    return f"granted: {tool} (session)"
 
 
 def handle_deny(carrot, arg: str) -> str:
@@ -136,6 +148,42 @@ def handle_deny(carrot, arg: str) -> str:
         return f"unknown tool: {tool}"
     carrot.session_grants[tool] = False
     return f"denied: {tool}"
+
+
+def handle_revoke(carrot, arg: str) -> str:
+    tool = str(arg or "").strip()
+    if not tool:
+        return "usage: /revoke <tool>"
+    if tool not in TOOLS:
+        return f"unknown tool: {tool}"
+    carrot.permission_state = carrot.permission_store.clear_grant(tool)
+    carrot.session_grants[tool] = False
+    return f"revoked: {tool}"
+
+
+def handle_revoke_all(carrot) -> str:
+    carrot.permission_state = carrot.permission_store.clear_all()
+    carrot.session_grants.clear()
+    return "revoked all"
+
+
+def format_permissions(carrot) -> str:
+    """Merged consent view: config level/enabled + session + persistent."""
+    lines = []
+    for name in TOOLS:
+        level = carrot.tools_config.levels.get(name, 4)
+        enabled = "yes" if carrot.tools_config.enabled.get(name) \
+            else "no"
+        session = carrot.session_grants.get(name)
+        session_label = "granted" if session is True else \
+            "denied" if session is False else "none"
+        persistent = carrot.permission_state.grants.get(name)
+        persistent_label = "granted" if persistent is True else \
+            "denied" if persistent is False else "none"
+        lines.append(f"{name}: level={level} enabled={enabled} "
+                     f"session={session_label} "
+                     f"persistent={persistent_label}")
+    return "\n".join(lines)
 
 
 def _drive_band(level: float, threshold: float) -> str:
@@ -282,6 +330,18 @@ def main() -> None:
             continue
         if line.strip() == "/calls":
             print(format_calls(carrot))
+            continue
+        if line.strip() == "/permissions":
+            print(format_permissions(carrot))
+            continue
+        if line.strip() == "/revoke-all":
+            print(handle_revoke_all(carrot))
+            continue
+        if line.strip() == "/revoke":
+            print(handle_revoke(carrot, ""))
+            continue
+        if line.strip().startswith("/revoke "):
+            print(handle_revoke(carrot, line.strip()[len("/revoke"):]))
             continue
         if (line.strip() == "/allow"
                 or line.strip().startswith("/allow ")):
