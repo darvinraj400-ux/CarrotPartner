@@ -42,6 +42,27 @@ def test_sketch_vocabulary_pinned():
         "sensitive.")
 
 
+def test_patience_default():
+    from carrot.personality import TRAITS
+    assert Personality().patience == 0.5
+    assert "patience" in TRAITS
+
+
+def test_patience_range_rejected():
+    with pytest.raises(ValueError):
+        Personality(patience=1.5)
+    with pytest.raises(ValueError):
+        Personality(patience=-0.1)
+
+
+def test_patience_missing_key_defaults(tmp_path):
+    p = tmp_path / "p.json"
+    p.write_text('{"id": "t", "sensitivity": 0.6, "playfulness": 0.7,'
+                 ' "stoicism": 0.4, "shyness": 0.3, "pride": 0.4,'
+                 ' "warmth": 0.7}', encoding="utf-8")
+    assert Personality.load(str(p)).patience == 0.5
+
+
 def _ctx(*texts):
     buf = ConversationBuffer()
     for t in texts:

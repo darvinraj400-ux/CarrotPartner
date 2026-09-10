@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass
 
 TRAITS = ("sensitivity", "playfulness", "stoicism",
-          "shyness", "pride", "warmth")
+          "shyness", "pride", "warmth", "patience")
 
 
 def _check(name: str, value: float) -> float:
@@ -32,6 +32,11 @@ class Personality:
     shyness: float = 0.3
     pride: float = 0.4
     warmth: float = 0.7
+    patience: float = 0.5
+
+    def __post_init__(self) -> None:
+        for trait in TRAITS:
+            _check(trait, getattr(self, trait))
 
     @classmethod
     def load(cls, path: str) -> "Personality":
