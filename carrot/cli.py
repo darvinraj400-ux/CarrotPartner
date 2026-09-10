@@ -6,8 +6,9 @@ import sys
 import time
 from pathlib import Path
 
-from .drives import drive_pull
+from .drives import drive_pull, update_rise
 from .environment import MockEnvironmentProbe
+from .initiative import ACTIVE_REASONS, should_initiate
 from .memory import MAX_MEMORY_TEXT_CHARS, Memory
 from .tools import TOOLS
 
@@ -21,7 +22,8 @@ HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "  /tools list tools | /calls recent tool calls | "
              "/allow <tool> allow this session | /deny <tool> deny this session\n"
              "  /permissions view consents | /allow <tool> [always] grant | "
-             "/revoke <tool> clear consent | /revoke-all clear all")
+             "/revoke <tool> clear consent | /revoke-all clear all\n"
+             "  /initiative show initiative decision")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
@@ -216,6 +218,29 @@ def format_env(carrot) -> str:
             f"observed: {'yes' if observed else 'no'}")
 
 
+def format_initiative(carrot) -> str:
+    """Read-only initiative view: current decision + per-reason cooldowns."""
+    now = carrot._now()
+    last_seen = carrot.state.last_seen
+    elapsed = (now - last_seen) if last_seen else 0.0
+    drives = update_rise(carrot.drive_store.load(), elapsed,
+                         carrot.drives_config.rise_per_hour)
+    state = carrot.initiative_store.load()
+    decision = should_initiate(
+        drives, elapsed, carrot.last_environment,
+        state.per_reason_last_fire, now, carrot.initiative_config)
+    lines = [f"decision: {decision.reason if decision is not None else 'none'}"]
+    for reason in ACTIVE_REASONS:
+        last = state.per_reason_last_fire.get(reason, 0.0)
+        cooldown = carrot.initiative_config.cooldowns.get(reason, 0.0)
+        remaining = max(0.0, cooldown - (now - last))
+        if remaining <= 0:
+            lines.append(f"{reason}: ready")
+        else:
+            lines.append(f"{reason}: cooldown({int(remaining)})")
+    return "\n".join(lines)
+
+
 def format_dbg(carrot) -> str:
     """Debug inner-state view. Floats permitted (dev surface)."""
     s = carrot.state
@@ -288,13 +313,79 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None):
     return carrot
 
 
-def main() -> None:
+_INITIATIVE_REASON_LINES = {
+    "long-absence": "The user has been away for a while.",
+    "high-social-drive": "You've been wanting to talk to them.",
+    "session-open": "A fresh session just started.",
+    "user-returned": "The user just came back.",
+}
+
+
+def _initiative_system_prompt(carrot, reason: str) -> str:
+    sketch = carrot.personality.sketch()
+    reason_line = _INITIATIVE_REASON_LINES[reason]
+    return (
+        sketch + " " + reason_line + " "
+        "Open with one short, natural message. No numbers. No questions "
+        "requiring urgent answers. If nothing meaningful to say, a brief "
+        "greeting is fine."
+    )
+
+
+def _parse_away_args(argv) -> tuple[bool, int]:
+    args = list(argv or [])
+    if "--away" not in args:
+        return False, 3
+    rest = args[args.index("--away") + 1:]
+    if not rest:
+        return True, 3
+    try:
+        number = int(rest[0])
+    except (TypeError, ValueError):
+        return True, 3
+    return True, max(1, min(10, number))
+
+
+def _run_away_mode(carrot, max_n: int) -> None:
+    """Bounded initiative actuation. Never calls process_turn, never writes
+    to the conversation buffer. Each iteration loads drives read-only,
+    decides, renders one message via llm.generate, prints it, and records
+    the fire. Terminates after at most max_n iterations or on the first
+    None decision."""
+    for _ in range(max_n):
+        now = carrot._now()
+        last_seen = carrot.state.last_seen
+        elapsed = (now - last_seen) if last_seen else 0.0
+        raw_drives = carrot.drive_store.load()
+        drives = update_rise(raw_drives, elapsed,
+                             carrot.drives_config.rise_per_hour)
+        state = carrot.initiative_store.load()
+        decision = should_initiate(
+            drives, elapsed, carrot.last_environment,
+            state.per_reason_last_fire, now, carrot.initiative_config,
+        )
+        if decision is None:
+            break
+        system = _initiative_system_prompt(carrot, decision.reason)
+        message = carrot.llm.generate(
+            system=system, history=[], user="Open with a short greeting.",
+        )
+        print(message)
+        carrot.initiative_store.record_fire(decision.reason, now)
+
+
+def main(argv=None) -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stdin.reconfigure(encoding="utf-8")
     except Exception:
         pass
+    args = list(sys.argv[1:] if argv is None else argv)
+    away, max_n = _parse_away_args(args)
     carrot = build_carrot()
+    if away:
+        _run_away_mode(carrot, max_n)
+        return
     print("Carrot (slice 1) -- type /quit to exit, /dbg for inner state.")
     while True:
         try:
@@ -324,6 +415,9 @@ def main() -> None:
             continue
         if line.strip() == "/env":
             print(format_env(carrot))
+            continue
+        if line.strip() == "/initiative":
+            print(format_initiative(carrot))
             continue
         if line.strip() == "/tools":
             print(format_tools(carrot))

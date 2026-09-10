@@ -9,12 +9,16 @@ from carrot.cli import (
     HELP_TEXT,
     NO_CONTEXT_YET,
     NO_MEMORIES_YET,
+    _initiative_system_prompt,
+    _parse_away_args,
+    _run_away_mode,
     build_carrot,
     format_ctx,
     format_dbg,
     format_drives,
     format_env,
     format_calls,
+    format_initiative,
     format_permissions,
     format_tools,
     handle_allow,
@@ -26,6 +30,7 @@ from carrot.cli import (
     handle_ctx,
     handle_forget,
     handle_remember,
+    main,
 )
 from carrot.context import derive_context
 from carrot.drives import DriveState, DriveStore, DrivesConfig
@@ -36,9 +41,10 @@ from carrot.environment import (
     MockEnvironmentProbe,
     RawObservation,
 )
+from carrot.initiative import ACTIVE_REASONS
 from carrot.memory import MAX_MEMORIES, Memory, MemoryStore
 from tests.conftest import ROOT
-from tests.test_scenarios import make_carrot
+from tests.test_scenarios import FakeTime, make_carrot
 
 
 def _mem_carrot(tmp_path):
@@ -862,3 +868,229 @@ def test_help_lists_new_permission_commands():
     for cmd in ("/permissions", "/revoke", "/revoke-all"):
         assert cmd in HELP_TEXT
     assert "/allow" in HELP_TEXT
+
+
+def _away_carrot(drive_social=0.0, last_seen_delta=0.0, clock=None):
+    clock = clock or FakeTime()
+    c = make_carrot(start=clock)
+    if drive_social:
+        c.drive_store.save(DriveState(social=drive_social, novelty=0.0))
+    if last_seen_delta:
+        c.state.set_last_seen(clock() - last_seen_delta)
+    return c, clock
+
+
+def test_initiative_fresh_state():
+    c, _clock = _away_carrot()
+    out = format_initiative(c)
+    assert out.splitlines()[0] == "decision: session-open"
+    assert "session-open: ready" in out
+
+
+def test_initiative_long_absence():
+    c, _clock = _away_carrot(last_seen_delta=25000)
+    out = format_initiative(c)
+    assert out.splitlines()[0] == "decision: long-absence"
+
+
+def test_initiative_cooldown_shown():
+    c, clock = _away_carrot()
+    c.initiative_store.record_fire("session-open", clock() - 100)
+    out = format_initiative(c)
+    assert "session-open: cooldown(14300)" in out
+    assert out.splitlines()[0] == "decision: none"
+
+
+def test_initiative_all_on_cooldown():
+    c, clock = _away_carrot()
+    for reason in ("long-absence", "high-social-drive", "session-open"):
+        c.initiative_store.record_fire(reason, clock())
+    out = format_initiative(c)
+    assert out.splitlines()[0] == "decision: none"
+
+
+def test_initiative_no_mutation(tmp_path):
+    c, _clock = _away_carrot()
+    path = tmp_path / "probe.json"
+    c.drive_store.save(DriveState(social=0.1, novelty=0.0))
+    import shutil
+
+    probe_path = tmp_path / "probe-drives.json"
+    shutil.copy(c.drive_store.path, probe_path)
+    before_state = c.state.to_dict()
+    mtime = probe_path.stat().st_mtime_ns
+    format_initiative(c)
+    out = format_initiative(c)
+    assert c.state.to_dict() == before_state
+    assert probe_path.stat().st_mtime_ns == mtime
+    assert "decision: session-open" in out
+
+
+def test_initiative_deterministic():
+    first, _ = _away_carrot(last_seen_delta=20000)
+    second, _ = _away_carrot(last_seen_delta=20000)
+    assert format_initiative(first) == format_initiative(second)
+
+
+def test_initiative_digits_allowed():
+    c, clock = _away_carrot()
+    c.initiative_store.record_fire("session-open", clock() - 100)
+    assert re.search(r"\d", format_initiative(c)) is not None
+
+
+def test_parse_away_no_flag():
+    assert _parse_away_args([]) == (False, 3)
+
+
+def test_parse_away_alone():
+    assert _parse_away_args(["--away"]) == (True, 3)
+
+
+def test_parse_away_count():
+    assert _parse_away_args(["--away", "5"]) == (True, 5)
+
+
+def test_parse_away_zero_clamped():
+    assert _parse_away_args(["--away", "0"]) == (True, 1)
+
+
+def test_parse_away_large_clamped():
+    assert _parse_away_args(["--away", "99"]) == (True, 10)
+
+
+def test_parse_away_unparseable():
+    assert _parse_away_args(["--away", "xyz"]) == (True, 3)
+
+
+def test_away_empty_eligibility(capsys):
+    c, _clock = _away_carrot()
+    _run_away_mode(c, 3)
+    out = capsys.readouterr().out.strip().splitlines()
+    assert len(out) == 1
+    assert dict(c.initiative_store.load().per_reason_last_fire) == \
+        {"session-open": c._now()}
+
+
+def test_away_breaks_on_second_none(capsys):
+    c, _clock = _away_carrot()
+    _run_away_mode(c, 3)
+    out = capsys.readouterr().out.strip().splitlines()
+    assert len(out) == 1
+    assert dict(c.initiative_store.load().per_reason_last_fire) == \
+        {"session-open": c._now()}
+
+
+def test_away_two_messages_then_none(capsys):
+    c, _clock = _away_carrot(drive_social=0.9, last_seen_delta=25000)
+    c.initiative_store.record_fire("session-open", c._now())
+    _run_away_mode(c, 5)
+    out = capsys.readouterr().out.strip().splitlines()
+    assert len(out) == 2
+    fired = dict(c.initiative_store.load().per_reason_last_fire)
+    assert set(fired) == {"long-absence", "high-social-drive",
+                          "session-open"}
+
+
+def test_away_bounded_at_max_n(capsys):
+    c, clock = _away_carrot(drive_social=0.9, last_seen_delta=25000)
+    _run_away_mode(c, 2)
+    out = capsys.readouterr().out.strip().splitlines()
+    assert len(out) == 2
+
+
+def test_away_no_process_turn_or_buffer_write(monkeypatch):
+    c, _clock = _away_carrot()
+    before_buffer = list(c.buffer.recent())
+    before_state = c.state.to_dict()
+    calls = []
+    monkeypatch.setattr(c, "process_turn",
+                        lambda *a, **k: calls.append((a, k)))
+    _run_away_mode(c, 2)
+    assert calls == []
+    assert list(c.buffer.recent()) == before_buffer
+    assert c.state.to_dict() == before_state
+
+
+def test_away_llm_generate_counts():
+    c, _clock = _away_carrot()
+    counts = {"n": 0}
+    orig = c.llm.generate
+
+    def counting_generate(*, system, history, user):
+        counts["n"] += 1
+        return orig(system=system, history=history, user=user)
+
+    c.llm.generate = counting_generate
+    _run_away_mode(c, 3)
+    assert counts["n"] == 1
+
+
+def test_away_no_drive_rise_saved(tmp_path):
+    import shutil
+
+    c, _clock = _away_carrot(drive_social=0.9)
+    probe_path = tmp_path / "probe-drives.json"
+    shutil.copy(c.drive_store.path, probe_path)
+    mtime = probe_path.stat().st_mtime_ns
+    before = probe_path.read_bytes()
+    _run_away_mode(c, 1)
+    assert probe_path.read_bytes() == before
+    assert probe_path.stat().st_mtime_ns == mtime
+
+
+def test_away_static_strings_and_leakage():
+    from carrot.cli import _INITIATIVE_REASON_LINES
+
+    banned = ["granted", "grant", "denied", "deny", "consent", "policy",
+              "revoke", "permission", "permissions"]
+    for reason in ("long-absence", "high-social-drive", "session-open"):
+        line = _INITIATIVE_REASON_LINES[reason]
+        assert re.search(r"\d", line) is None
+        for word in banned:
+            assert re.search(rf"\b{word}\b", line.lower()) is None, word
+    c, _clock = _away_carrot()
+    prompt = c.__class__  # placeholder never used; see below
+    del prompt
+    import carrot.cli as _cli
+
+    line = _cli._INITIATIVE_REASON_LINES["long-absence"]
+    assert "away for a while" in line
+
+
+def test_away_deterministic(capsys):
+    def _run_once():
+        carrot, _ = _away_carrot(drive_social=0.9,
+                                 last_seen_delta=25000)
+        _run_away_mode(carrot, 3)
+        return (capsys.readouterr().out,
+                dict(carrot.initiative_store.load().per_reason_last_fire))
+
+    first_out, first_fires = _run_once()
+    second_out, second_fires = _run_once()
+    assert first_out == second_out
+    assert first_fires.keys() == second_fires.keys()
+
+
+def test_help_lists_initiative():
+    assert "/initiative" in HELP_TEXT
+
+
+def test_main_no_flag_enters_repl(monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda *a, **k: (_ for _ in ()
+                                                           ).throw(EOFError))
+    monkeypatch.setattr("carrot.cli.build_carrot", lambda: make_carrot())
+    from carrot.cli import main
+
+    main([])
+    out = capsys.readouterr().out
+    assert "Carrot (slice 1)" in out
+
+
+def test_main_away_flag_runs_away(monkeypatch, capsys):
+    monkeypatch.setattr("carrot.cli.build_carrot", lambda: make_carrot())
+    from carrot.cli import main
+
+    main(["--away"])
+    out = capsys.readouterr().out.strip().splitlines()
+    assert len(out) == 1
+    assert "Carrot (slice 1)" not in capsys.readouterr().out
