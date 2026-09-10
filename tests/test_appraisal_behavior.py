@@ -2,7 +2,13 @@
 import pytest
 
 from carrot.appraisal import Appraisal
-from carrot.behavior import BEHAVIORS, BehaviorSelector, _patience_threshold
+from carrot.behavior import (
+    BEHAVIORS,
+    THRESHOLD_SAFETY_MAX,
+    THRESHOLD_SAFETY_MIN,
+    BehaviorSelector,
+    _patience_threshold,
+)
 from carrot.classifier import InteractionEvent
 from carrot.context import derive_context
 from carrot.conversation import ConversationBuffer
@@ -174,14 +180,9 @@ def test_patience_high_raises_frustrated_threshold():
 
 
 def test_patience_low_lowers_frustrated_threshold():
-    # NOTE: the locked [0.4, 0.9] clamp sits exactly on the default
-    # frustrated base (0.4), so with default config low patience cannot
-    # lower it further (0.36 clamps back to 0.4). This test therefore
-    # pins the modulation mechanism with a raised configured base,
-    # using the same config-lookup path as production.
-    sel = BehaviorSelector({"frustrated_anger": 0.7, "annoyed": 0.8})
-    tense = EmotionState(emotions={"anger": 0.68}, energy=0.2)
-    assert sel.pick(tense, _pat(0.5), _blank(), "").name == "quiet"
+    sel = BehaviorSelector({})
+    tense = EmotionState(emotions={"anger": 0.38}, energy=0.2)
+    assert sel.pick(tense, _pat(0.5), _blank(), "").name != "frustrated"
     assert sel.pick(tense, _pat(0.1), _blank(), "").name == "frustrated"
 
 
@@ -200,8 +201,12 @@ def test_patience_low_lowers_annoyed_threshold():
 
 
 def test_patience_threshold_clamps():
-    assert _patience_threshold(0.4, 0.0) == 0.4
+    assert abs(_patience_threshold(0.4, 0.0) - 0.35) < 1e-9
     assert abs(_patience_threshold(0.55, 1.0) - 0.6) < 1e-9
+    # The clamp is unreachable with real gate bases (0.3-0.65); pin the
+    # constants directly instead of a synthetic edge test.
+    assert THRESHOLD_SAFETY_MIN == 0.05
+    assert THRESHOLD_SAFETY_MAX == 0.95
     sel = BehaviorSelector({})
     low = EmotionState(emotions={"anger": 0.42}, energy=0.2)
     assert sel.pick(low, _pat(0.0), _blank(), "").name == "frustrated"

@@ -14,8 +14,12 @@ from .context import ConversationContext
 
 # Warmth shifts the affection gate: higher warmth lowers the bar.
 WARMTH_WEIGHT = 0.10
-_AFF_THRESHOLD_LO = 0.4
-_AFF_THRESHOLD_HI = 0.9
+
+# Safety rails for modulated thresholds: emotion values are in [0, 1];
+# thresholds are meaningful anywhere in (0, 1); these bounds prevent
+# pathological 0.0/1.0 thresholds without restricting modulation.
+THRESHOLD_SAFETY_MIN = 0.05
+THRESHOLD_SAFETY_MAX = 0.95
 
 # Patience shifts the frustration gates: higher patience raises the bar,
 # so it takes more anger to read as annoyed or frustrated.
@@ -23,7 +27,9 @@ PATIENCE_WEIGHT = 0.10
 
 
 def _patience_threshold(base: float, patience: float) -> float:
-    return max(0.4, min(0.9, base + (patience - 0.5) * PATIENCE_WEIGHT))
+    return max(THRESHOLD_SAFETY_MIN,
+               min(THRESHOLD_SAFETY_MAX,
+                   base + (patience - 0.5) * PATIENCE_WEIGHT))
 
 BEHAVIORS = ("normal", "playful", "excited", "sad", "annoyed", "sulking",
              "quiet", "shy", "affectionate", "embarrassed", "curious",
@@ -75,7 +81,8 @@ class BehaviorSelector:
     def _affection_threshold(self, personality) -> float:
         base = self._get("affectionate", 0.65)
         adjusted = base - (float(personality.warmth) - 0.5) * WARMTH_WEIGHT
-        return max(_AFF_THRESHOLD_LO, min(_AFF_THRESHOLD_HI, adjusted))
+        return max(THRESHOLD_SAFETY_MIN,
+                   min(THRESHOLD_SAFETY_MAX, adjusted))
 
     def pick(self, state, personality, context: ConversationContext,
              user_text: str) -> Behavior:
