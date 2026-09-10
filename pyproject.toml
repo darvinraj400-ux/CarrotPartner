@@ -1,0 +1,8 @@
+[project]
+name = "carrot"
+version = "0.1.0"
+description = "Carrot AI companion, Slice 1: emotional/behavioral foundation"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

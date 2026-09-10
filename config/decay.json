@@ -1,0 +1,1 @@
+{"baselines": {"affection": 0.5, "anger": 0.05, "embarrassment": 0.0, "energy": 0.7, "excitement": 0.2, "happiness": 0.5, "hurt": 0.05, "sadness": 0.05}, "half_lives": {"affection": 86400, "anger": 5400, "embarrassment": 3600, "energy": 7200, "excitement": 600, "happiness": 3600, "hurt": 10800, "sadness": 7200}}
