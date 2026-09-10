@@ -72,13 +72,18 @@ def test_snapshot_does_not_leak_to_classify():
 
 
 def test_snapshot_does_not_leak_to_prompt():
+    # Re-seeded in Slice 6 Phase 3 (Slice 5 Phase-4b pattern): an EMPTY
+    # snapshot still renders nothing (Phase 2 behavior preserved), while
+    # an allowlisted snapshot appends exactly the locked sentence(s).
     full = make_carrot()
     full.environment_probe = CountingProbe(
         RawObservation("code.exe", False))
     blank = make_carrot()
     full.process_turn("talking about gardening")
     blank.process_turn("talking about gardening")
-    assert full.llm.last_system == blank.llm.last_system
+    assert "Context:" not in blank.llm.last_system
+    assert full.llm.last_system == blank.llm.last_system + \
+        " Context: They're in the editor."
 
 
 def test_default_probe_is_mock_not_real():

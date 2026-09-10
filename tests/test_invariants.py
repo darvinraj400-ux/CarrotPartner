@@ -7,6 +7,7 @@ from pathlib import Path
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
 from carrot.drives import DriveState, DriveStore
+from carrot.environment import MockEnvironmentProbe, RawObservation
 
 
 def _seeded_drives(tmp_path, social, novelty, name="d.json"):
@@ -318,6 +319,12 @@ def test_drive_prompt_deterministic(tmp_path):
     assert first.llm.last_system == second.llm.last_system
 
 
+def _env_carrot(tmp_path, observations, name="e.json", drive=(0.0, 0.0)):
+    c = make_carrot(drive_store=_seeded_drives(tmp_path, *drive, name=name))
+    c.environment_probe = MockEnvironmentProbe(observations)
+    return c
+
+
 def test_extreme_sketch_passes_leakage():
     from carrot.personality import Personality
 
@@ -336,3 +343,121 @@ def test_extreme_sketch_passes_leakage():
                  "stoicism", "shyness", "pride", "warmth", "patience",
                  "mood"]:
         assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def _env_skeleton(system):
+    return re.sub(r'"[^"]*"', "", system)
+
+
+def test_env_app_sentence_present(tmp_path):
+    c = _env_carrot(tmp_path, [RawObservation("cmd.exe", False)])
+    c.process_turn("hello there")
+    assert "They're in the terminal." in c.llm.last_system
+
+
+def test_env_idle_sentence_present(tmp_path):
+    c = _env_carrot(tmp_path, [RawObservation(None, True)])
+    c.process_turn("hello there")
+    assert "They've been away for a bit." in c.llm.last_system
+
+
+def test_env_both_sentences_ordered(tmp_path):
+    c = _env_carrot(tmp_path, [RawObservation("cmd.exe", True)])
+    c.process_turn("hello there")
+    system = c.llm.last_system
+    assert system.index("They're in the terminal.") < \
+        system.index("They've been away for a bit.")
+
+
+def test_env_neither_present(tmp_path):
+    fresh = make_carrot()
+    fresh.process_turn("12345 !!!")
+    assert "They're in the" not in fresh.llm.last_system
+    assert "been away for a bit" not in fresh.llm.last_system
+
+
+def test_env_order_last_after_drive(tmp_path):
+    c = _env_carrot(tmp_path, [RawObservation("cmd.exe", False)],
+                    drive=(0.9, 0.0))
+    c.process_turn("lol that was funny")
+    c.clock.advance(5)
+    c.process_turn("are you awake?")
+    c.clock.advance(5)
+    c.process_turn("yes, I'm here")
+    system = c.llm.last_system
+    assert "Recent topics:" in system
+    assert "You've been wanting to talk to them." in system
+    assert system.index("They're in the terminal.") > \
+        system.index("You've been wanting to talk to them.")
+    assert system.index("They're in the terminal.") > \
+        system.index("Recent topics:")
+
+
+def test_env_adversarial_raw_renders_nothing(tmp_path):
+    c = _env_carrot(tmp_path,
+                    [RawObservation("Report Q3 anger_management.exe", False)])
+    c.process_turn("hello there")
+    assert c.last_environment.app_noun is None
+    system = c.llm.last_system
+    skeleton = _env_skeleton(system)
+    assert re.search(r"\d", skeleton) is None
+    assert re.search(r"\banger\b", skeleton.lower()) is None
+
+
+def test_env_known_good_skeleton_clean(tmp_path):
+    c = _env_carrot(tmp_path, [RawObservation("cmd.exe", False)])
+    c.process_turn("hello there")
+    skeleton = _env_skeleton(c.llm.last_system)
+    assert re.search(r"\d", skeleton) is None
+    assert re.search(r"\d\.\d", skeleton) is None
+
+
+def test_env_static_strings_all_nouns(tmp_path):
+    import json
+
+    config = json.loads((ROOT / "config" / "environment.json").read_text(
+        encoding="utf-8"))
+    by_noun = {}
+    for process, noun in config["allowed_apps"].items():
+        by_noun.setdefault(noun, process)
+    assert len(by_noun) >= 5
+    for noun, process in sorted(by_noun.items()):
+        c = _env_carrot(tmp_path, [RawObservation(process, False)],
+                        name=f"{noun}.json")
+        c.process_turn("12345 !!!")
+        system = c.llm.last_system
+        assert f"They're in the {noun}." in system
+        assert process not in system
+        assert re.search(r"\d", _env_skeleton(system)) is None
+
+
+def test_env_no_raw_process_name(tmp_path):
+    c = _env_carrot(tmp_path, [RawObservation("code.exe", False)])
+    c.process_turn("hello there")
+    system = c.llm.last_system
+    assert "They're in the editor." in system
+    assert "code.exe" not in system
+    assert "CODE.EXE" not in system
+
+
+def test_env_deterministic(tmp_path):
+    first = _env_carrot(tmp_path, [RawObservation("cmd.exe", True)],
+                        "a.json")
+    second = _env_carrot(tmp_path, [RawObservation("cmd.exe", True)],
+                         "b.json")
+    first.process_turn("hello there")
+    second.process_turn("hello there")
+    assert first.llm.last_system == second.llm.last_system
+
+
+def test_env_block_omitted_when_empty(tmp_path):
+    c = make_carrot()
+    c.process_turn("12345 !!!")
+    assert "Context:" not in c.llm.last_system
+
+
+def test_env_block_present_when_only_env(tmp_path):
+    c = _env_carrot(tmp_path, [RawObservation("cmd.exe", False)])
+    c.process_turn("12345 !!!")
+    system = c.llm.last_system
+    assert system.endswith("Context: They're in the terminal.")

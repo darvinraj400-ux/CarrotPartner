@@ -73,7 +73,7 @@ def _memories_block(recalled) -> str:
 
 
 def _context_hint(context: ConversationContext, user_text: str,
-                  drive_pull=None) -> str:
+                  drive_pull=None, environment=None) -> str:
     lowered = str(user_text or "").strip().lower()
     answered = (bool(lowered) and not lowered.endswith("?")
                 and not _has_cue(lowered, _REPAIR_CUES)
@@ -91,6 +91,11 @@ def _context_hint(context: ConversationContext, user_text: str,
     sentence = _DRIVE_PULL_SENTENCES.get(drive_pull)
     if sentence is not None:
         parts.append(sentence)
+    if environment is not None:
+        if environment.app_noun is not None:
+            parts.append("They're in the " + environment.app_noun + ".")
+        if environment.idle:
+            parts.append("They've been away for a bit.")
     if not parts:
         return ""
     return " Context: " + " ".join(parts)
@@ -146,7 +151,8 @@ class Carrot:
     def _system_prompt(self, behavior: Behavior,
                          context: ConversationContext,
                          user_text: str,
-                         recalled=(), drive_pull=None) -> str:
+                         recalled=(), drive_pull=None,
+                         environment=EMPTY_SNAPSHOT) -> str:
         degree = _BAND_WORDS.get(behavior.band, "a little")
         return (
             f"{self.personality.sketch()} "
@@ -156,7 +162,7 @@ class Carrot:
             "and natural, like a person texting. Mirror the user's language "
             "and emoji naturally; do not force emoji."
             + _memories_block(recalled)
-            + _context_hint(context, user_text, drive_pull)
+            + _context_hint(context, user_text, drive_pull, environment)
         )
 
     @staticmethod
@@ -258,7 +264,8 @@ class Carrot:
         # 6. LLM renders wording only. Its output never re-enters state.
         reply = self.llm.generate(
             system=self._system_prompt(behavior, ctx, str(text), recalled,
-                                       drive_pull=self.last_drive_pull),
+                                       drive_pull=self.last_drive_pull,
+                                       environment=self.last_environment),
             history=self.buffer.history_for_llm(),
             user=str(text))
 
