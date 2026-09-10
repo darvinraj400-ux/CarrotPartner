@@ -1,9 +1,25 @@
 """Phase-5 tests: /ctx handler, last_context retention, help text."""
 import re
 
-from carrot.cli import HELP_TEXT, NO_CONTEXT_YET, format_ctx, handle_ctx
+from carrot.cli import (
+    HELP_TEXT,
+    NO_CONTEXT_YET,
+    NO_MEMORIES_YET,
+    format_ctx,
+    format_mem_debug,
+    format_memories,
+    handle_ctx,
+    handle_forget,
+    handle_remember,
+)
 from carrot.context import derive_context
+from carrot.memory import MAX_MEMORIES, Memory, MemoryStore
 from tests.test_scenarios import make_carrot
+
+
+def _mem_carrot(tmp_path):
+    return make_carrot(
+        memory_store=MemoryStore(str(tmp_path / "mem.json")))
 
 
 def test_ctx_before_any_turn():
@@ -57,3 +73,155 @@ def test_help_lists_ctx():
     assert "/ctx" in HELP_TEXT
     assert "/dbg" in HELP_TEXT
     assert "/quit" in HELP_TEXT
+
+
+def _seed(carrot, *texts):
+    for text in texts:
+        carrot.memory_store.add(Memory(
+            text=text, kind="fact", importance=0.5,
+            created_ts=1000.0, last_recalled_ts=1000.0))
+
+
+def test_memories_empty(tmp_path):
+    assert format_memories(_mem_carrot(tmp_path).memory_store) == \
+        NO_MEMORIES_YET
+
+
+def test_memories_lists_kind_and_text(tmp_path):
+    c = _mem_carrot(tmp_path)
+    _seed(c, "my dog is funny", "I love ramen", "my cat is grumpy")
+    lines = format_memories(c.memory_store).split("\n")
+    assert lines == ["[fact] my dog is funny",
+                     "[fact] I love ramen",
+                     "[fact] my cat is grumpy"]
+    out = format_memories(c.memory_store)
+    assert re.search(r"\d\.\d", out) is None
+    assert "importance" not in out
+    assert "created" not in out
+
+
+def test_memories_no_mutation(tmp_path):
+    c = _mem_carrot(tmp_path)
+    _seed(c, "my dog is funny")
+    path = tmp_path / "mem.json"
+    before = c.memory_store.all()
+    mtime = path.stat().st_mtime_ns
+    format_memories(c.memory_store)
+    assert c.memory_store.all() == before
+    assert path.stat().st_mtime_ns == mtime
+
+
+def test_mem_empty(tmp_path):
+    assert format_mem_debug(_mem_carrot(tmp_path).memory_store) == \
+        NO_MEMORIES_YET
+
+
+def test_mem_shows_debug_detail(tmp_path):
+    c = _mem_carrot(tmp_path)
+    _seed(c, "my dog is funny", "I love ramen", "my cat is grumpy")
+    lines = format_mem_debug(c.memory_store).split("\n")
+    assert len(lines) == 3
+    for line in lines:
+        assert "importance=" in line
+        assert "created=" in line
+        assert "recalled=" in line
+
+
+def test_mem_no_mutation(tmp_path):
+    c = _mem_carrot(tmp_path)
+    _seed(c, "my dog is funny")
+    path = tmp_path / "mem.json"
+    before = c.memory_store.all()
+    mtime = path.stat().st_mtime_ns
+    format_mem_debug(c.memory_store)
+    assert c.memory_store.all() == before
+    assert path.stat().st_mtime_ns == mtime
+
+
+def test_remember_valid(tmp_path):
+    c = _mem_carrot(tmp_path)
+    assert handle_remember(c, "my dog is a corgi") == "remembered"
+    mems = c.memory_store.all()
+    assert len(mems) == 1
+    assert mems[0].text == "my dog is a corgi"
+    assert mems[0].kind == "fact"
+    assert mems[0].importance == 0.8
+    assert mems[0].created_ts != 0
+    assert mems[0].last_recalled_ts != 0
+
+
+def test_remember_empty(tmp_path):
+    c = _mem_carrot(tmp_path)
+    assert handle_remember(c, "") == "usage: /remember <text>"
+    assert c.memory_store.all() == ()
+
+
+def test_remember_whitespace(tmp_path):
+    c = _mem_carrot(tmp_path)
+    assert handle_remember(c, "    ") == "usage: /remember <text>"
+    assert c.memory_store.all() == ()
+
+
+def test_remember_too_long(tmp_path):
+    c = _mem_carrot(tmp_path)
+    assert handle_remember(c, "x" * 141) == "too long"
+    assert c.memory_store.all() == ()
+
+
+def test_remember_duplicate(tmp_path):
+    c = _mem_carrot(tmp_path)
+    assert handle_remember(c, "My dog is funny") == "remembered"
+    assert handle_remember(c, "my DOG is FUNNY") == "already remembered"
+    assert len(c.memory_store.all()) == 1
+
+
+def test_remember_cap_full(tmp_path):
+    c = _mem_carrot(tmp_path)
+    for i in range(MAX_MEMORIES):
+        c.memory_store.add(Memory(
+            text=f"fact number {i}", kind="fact", importance=0.5,
+            created_ts=float(i), last_recalled_ts=float(i)))
+    assert handle_remember(c, "one more") == "memory full"
+    assert len(c.memory_store.all()) == MAX_MEMORIES
+
+
+def test_forget_matching(tmp_path):
+    c = _mem_carrot(tmp_path)
+    _seed(c, "my dog is funny", "my dog likes snow", "I love ramen")
+    assert handle_forget(c, "dog") == "forgot 2"
+    assert [m.text for m in c.memory_store.all()] == ["I love ramen"]
+
+
+def test_forget_case_insensitive(tmp_path):
+    c = _mem_carrot(tmp_path)
+    _seed(c, "my dog is a corgi")
+    assert handle_forget(c, "CORGI") == "forgot 1"
+    assert c.memory_store.all() == ()
+
+
+def test_forget_no_match(tmp_path):
+    c = _mem_carrot(tmp_path)
+    _seed(c, "I love ramen")
+    assert handle_forget(c, "zzzz") == "no matches"
+    assert len(c.memory_store.all()) == 1
+
+
+def test_forget_empty_arg(tmp_path):
+    c = _mem_carrot(tmp_path)
+    _seed(c, "I love ramen")
+    assert handle_forget(c, "") == "usage: /forget <substring>"
+    assert handle_forget(c, "   ") == "usage: /forget <substring>"
+    assert len(c.memory_store.all()) == 1
+
+
+def test_help_lists_memory_commands():
+    for cmd in ("/memories", "/remember", "/forget", "/mem"):
+        assert cmd in HELP_TEXT
+
+
+def test_cli_memory_round_trip(tmp_path):
+    c = _mem_carrot(tmp_path)
+    assert handle_remember(c, "my dog is a corgi") == "remembered"
+    assert "[fact] my dog is a corgi" in format_memories(c.memory_store)
+    assert handle_forget(c, "corgi") == "forgot 1"
+    assert format_memories(c.memory_store) == NO_MEMORIES_YET

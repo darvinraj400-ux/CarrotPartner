@@ -5,11 +5,16 @@ import json
 import sys
 from pathlib import Path
 
+from .memory import MAX_MEMORY_TEXT_CHARS, Memory
+
 ROOT = Path(__file__).resolve().parents[1]
 
 HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
-             "/quit exit")
+             "/quit exit\n"
+             "  /memories list memories | /mem memory details (dev only) | "
+             "/remember <text> save memory | /forget <substring> drop matches")
 NO_CONTEXT_YET = "(no context yet)"
+NO_MEMORIES_YET = "(no memories yet)"
 
 
 def format_ctx(ctx) -> str:
@@ -31,6 +36,51 @@ def handle_ctx(carrot) -> str:
     if carrot.last_context is None:
         return NO_CONTEXT_YET
     return format_ctx(carrot.last_context)
+
+
+def format_memories(store) -> str:
+    """User-facing memory list. Reads only: no floats, no timestamps."""
+    mems = store.all()
+    if not mems:
+        return NO_MEMORIES_YET
+    return "\n".join(f"[{m.kind}] {m.text}" for m in mems)
+
+
+def format_mem_debug(store) -> str:
+    """Debug memory view. Floats permitted (dev surface, like /dbg)."""
+    mems = store.all()
+    if not mems:
+        return NO_MEMORIES_YET
+    return "\n".join(
+        f"[{m.kind}] {m.text} (importance={m.importance}, "
+        f"created={m.created_ts}, recalled={m.last_recalled_ts})"
+        for m in mems)
+
+
+def handle_remember(carrot, arg: str) -> str:
+    text = str(arg or "").strip()
+    if not text:
+        return "usage: /remember <text>"
+    if len(text) > MAX_MEMORY_TEXT_CHARS:
+        return "too long"
+    existing = {m.text.strip().lower() for m in carrot.memory_store.all()}
+    if text.lower() in existing:
+        return "already remembered"
+    now = carrot._now()
+    ok = carrot.memory_store.add(Memory(
+        text=text, kind="fact", importance=0.8,
+        created_ts=now, last_recalled_ts=now))
+    return "remembered" if ok else "memory full"
+
+
+def handle_forget(carrot, arg: str) -> str:
+    substring = str(arg or "").strip()
+    if not substring:
+        return "usage: /forget <substring>"
+    removed = carrot.memory_store.remove_matching(substring)
+    if removed == 0:
+        return "no matches"
+    return f"forgot {removed}"
 
 
 def _load_json(name: str) -> dict:
@@ -97,6 +147,20 @@ def main() -> None:
             continue
         if line.strip() == "/ctx":
             print(handle_ctx(carrot))
+            continue
+        if line.strip() == "/memories":
+            print(format_memories(carrot.memory_store))
+            continue
+        if line.strip() == "/mem":
+            print(format_mem_debug(carrot.memory_store))
+            continue
+        if (line.strip() == "/remember"
+                or line.strip().startswith("/remember ")):
+            print(handle_remember(carrot, line.strip()[len("/remember"):]))
+            continue
+        if (line.strip() == "/forget"
+                or line.strip().startswith("/forget ")):
+            print(handle_forget(carrot, line.strip()[len("/forget"):]))
             continue
         reply = carrot.process_turn(line)
         carrot.store.save(carrot.state)
