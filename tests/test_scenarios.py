@@ -14,6 +14,7 @@ from carrot.conversation import ConversationBuffer
 from carrot.emotions import EmotionState
 from carrot.llm import MockLLM
 from carrot.memory import MemoryStore
+from carrot.permissions import PermissionStore
 from carrot.drives import DriveStore, DrivesConfig
 from carrot.environment import EnvironmentConfig
 from carrot.personality import Personality
@@ -36,7 +37,7 @@ class FakeTime:
 
 
 def make_carrot(personality=None, start=None, memory_store=None,
-                drive_store=None):
+                drive_store=None, permission_store=None):
     clock = start or FakeTime()
     llm = MockLLM()
     if memory_store is None:
@@ -51,6 +52,13 @@ def make_carrot(personality=None, start=None, memory_store=None,
                                  time_fn=clock)
     else:
         memdir = None
+    if permission_store is None:
+        permdir = tempfile.TemporaryDirectory(prefix="carrot-test-perm-")
+        permission_store = PermissionStore(Path(permdir.name)
+                                           / "permissions.json",
+                                           time_fn=clock)
+    else:
+        permdir = None
     carrot = Carrot(
         state=EmotionState(),
         personality=personality or Personality.load(
@@ -69,6 +77,7 @@ def make_carrot(personality=None, start=None, memory_store=None,
         drive_store=drive_store,
         drives_config=DrivesConfig.load(
             str(ROOT / "config" / "drives.json")),
+        permission_store=permission_store,
         environment_config=EnvironmentConfig.load(
             str(ROOT / "config" / "environment.json")),
         time_fn=clock,
@@ -77,6 +86,7 @@ def make_carrot(personality=None, start=None, memory_store=None,
     carrot.clock = clock
     carrot._tmp_memdir = tmpdir
     carrot._tmp_drvdir = memdir
+    carrot._tmp_permdir = permdir
     return carrot
 
 

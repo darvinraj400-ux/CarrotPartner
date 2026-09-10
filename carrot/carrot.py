@@ -31,6 +31,7 @@ from .environment import (
     map_observation,
 )
 from .memory import DeterministicExtractor, Memory, MemoryStore
+from .permissions import PermissionState, PermissionStore
 from .tools import (
     ToolCall,
     ToolsConfig,
@@ -61,6 +62,8 @@ _DRIVE_PULL_SENTENCES = {
 # default memory file lives next to it. Tests and callers pass an
 # explicit store instead.
 _DEFAULT_STATE_DIR = Path(__file__).resolve().parents[1] / "state"
+_DEFAULT_PERMISSIONS_PATH = (
+    Path(__file__).resolve().parents[1] / "state" / "permissions.json")
 # Same convention for config: <project>/config/drives.json. Absolute so
 # behavior never depends on the process working directory.
 _DEFAULT_DRIVES_CONFIG_PATH = (
@@ -134,7 +137,7 @@ class Carrot:
                  memory_store=None, extractor=None,
                  drive_store=None, drives_config=None,
                  environment_probe=None, environment_config=None,
-                 tools_config=None,
+                 tools_config=None, permission_store=None,
                  time_fn=None):
         self.state = state
         self.personality = personality
@@ -159,6 +162,10 @@ class Carrot:
         self.drives_config = drives_config
         self.last_drive_pull: str | None = None
         self.session_grants: dict[str, bool] = {}
+        if permission_store is None:
+            permission_store = PermissionStore(_DEFAULT_PERMISSIONS_PATH)
+        self.permission_store = permission_store
+        self.permission_state = self.permission_store.load()
         self.last_tool_calls: deque[ToolCall] = deque(maxlen=20)
         if tools_config is None:
             # Config is required: a missing file is a hard error here.
@@ -309,7 +316,8 @@ class Carrot:
         request = parse_tool_request(reply)
         if request is not None:
             decision = decide(request, self.tools_config,
-                              self.session_grants)
+                               self.session_grants,
+                               persistent_grants=self.permission_state.grants)
             if decision.allowed:
                 result = execute(request, self.tools_config)
                 tool_result_text = result.output if result.ok \
