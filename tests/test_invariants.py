@@ -1,5 +1,6 @@
 """Invariants: stdlib-only runtime, bounded growth, LLM-output isolation."""
 import ast
+import json
 import re
 import sys
 from pathlib import Path
@@ -983,6 +984,10 @@ _ALLOWED_JSON_BASENAMES = frozenset({
     "state.json", "memories.json", "drives.json", "permissions.json",
     "initiative.json", "appraisal.json", "behavior.json", "decay.json",
     "environment.json", "personality.json", "tools.json",
+    # Slice 11 pre-entry: state/relationship.json + config/relationship.json.
+    # The relationship slice is the only remaining slice expected to add a
+    # new persistent store; any future addition needs a planner-approved diff.
+    "relationship.json",
 })
 
 
@@ -1006,6 +1011,77 @@ def test_no_new_state_files():
         for name in _json_basename_literals(tree):
             if name not in _ALLOWED_JSON_BASENAMES:
                 offenders.append((path.name, name))
+    assert offenders == []
+
+
+# --- Slice 11 Phase 0: boundary pins ---
+
+
+def test_pick_signature_unchanged():
+    # Slice 11 boundary: relationship is a soft input via memory boost only.
+    # If a future slice threads it through pick(), it must be a deliberate
+    # planner-visible diff to this test — not a silent signature extension.
+    tree = ast.parse((ROOT / "carrot" / "behavior.py").read_text(
+        encoding="utf-8"))
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and node.name == "pick":
+            params = [a.arg for a in node.args.args]
+            assert node.args.vararg is None
+            assert node.args.kwarg is None
+            found.append(params)
+    assert found == [["self", "state", "personality", "context",
+                      "user_text"]]
+
+
+def test_appraisal_keys_unchanged():
+    # Slice 11 boundary: appraisal deltas are restricted to emotions + energy.
+    # A relationship dimension (trust, closeness) must never enter the
+    # appraisal table — relationship is orthogonal to affect.
+    data = json.loads((ROOT / "config" / "appraisal.json").read_text(
+        encoding="utf-8"))
+    allowed = {"happiness", "sadness", "anger", "hurt", "affection",
+               "excitement", "embarrassment", "energy"}
+    keys = set()
+    for deltas in data.values():
+        keys.update(deltas)
+    assert keys <= allowed, keys - allowed
+
+
+def test_no_relationship_in_state_json():
+    # Slice 11 boundary: relationship state lives in state/relationship.json.
+    # state.json (EmotionState) schema is frozen — no new dimensions there.
+    from carrot.emotions import EmotionState
+
+    d = EmotionState().to_dict()
+    assert "trust" not in d
+    assert "closeness" not in d
+    assert "relationship" not in d
+
+
+def test_relationship_module_is_pure():
+    # Relationship pure functions take plain floats and event-type strings,
+    # not DriveState or EnvironmentSnapshot types. If a future phase needs
+    # project types, that's a deliberate diff to this allowance set.
+    path = ROOT / "carrot" / "relationship.py"
+    if not path.exists():
+        pytest.skip("relationship.py lands in Phase 1")
+    offenders = []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if parts[0] == "carrot" or a.name == "carrot":
+                    offenders.append(a.name)
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            parts = mod.split(".")
+            if node.level == 0 and parts[0] == "carrot":
+                offenders.append(mod)
+            elif node.level > 0:
+                offenders.append("." + mod if mod else ".")
     assert offenders == []
 
 
