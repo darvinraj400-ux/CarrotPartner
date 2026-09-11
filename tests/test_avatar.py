@@ -1,11 +1,16 @@
 """Slice 12 Phase-1 tests: avatar expression mapping (pure, headless)."""
+import sys
+
 import pytest
 
 from carrot.avatar import (
+    AVATAR_UNAVAILABLE_MSG,
     INTENSITY_BANDS,
     VISUAL_STATES,
     Expression,
+    _closeness_band,
     expression_for,
+    launch_avatar,
 )
 
 
@@ -182,3 +187,126 @@ def test_palette_key_equals_name_all_states():
         expr = Expression(name=state, intensity_band="medium",
                           palette_key=state, presence_cue=None)
         assert expr.palette_key == expr.name
+
+
+# --- Slice 12 Phase 2: launch_avatar + degrade tests (headless) ---
+
+
+def test_degrade_message_constant():
+    assert AVATAR_UNAVAILABLE_MSG == "(avatar unavailable: no display)"
+
+
+def test_launcher_invoked_once_with_return():
+    calls = []
+
+    def fake_launcher(path):
+        calls.append(path)
+        return "fake-opened"
+
+    assert launch_avatar("some/state.json",
+                         launcher=fake_launcher) == "fake-opened"
+    assert len(calls) == 1
+
+
+def test_launcher_receives_state_path():
+    seen = []
+    launch_avatar("some/state.json", launcher=seen.append)
+    assert seen == ["some/state.json"]
+
+
+def test_launcher_does_not_import_tkinter():
+    assert "tkinter" not in sys.modules
+    launch_avatar("some/state.json", launcher=lambda p: "ok")
+    assert "tkinter" not in sys.modules
+
+
+def test_degrade_on_missing_tkinter(tmp_path, monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tkinter" or name.startswith("tkinter."):
+            raise ImportError("no tkinter here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert launch_avatar(tmp_path / "state.json") == \
+        AVATAR_UNAVAILABLE_MSG
+
+
+def test_degrade_does_not_raise(tmp_path, monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tkinter" or name.startswith("tkinter."):
+            raise ImportError("no tkinter here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    # Must return the message, not propagate — including when the
+    # state file does not exist (degrade precedes any file read).
+    assert launch_avatar(tmp_path / "missing.json") == \
+        AVATAR_UNAVAILABLE_MSG
+
+
+def test_degrade_precedes_file_read(tmp_path, monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tkinter" or name.startswith("tkinter."):
+            raise ImportError("no tkinter here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    missing = tmp_path / "nope" / "state.json"
+    assert launch_avatar(missing) == AVATAR_UNAVAILABLE_MSG
+    assert not missing.exists()
+
+
+def test_closeness_band_high():
+    assert _closeness_band(0.7) == "high"
+    assert _closeness_band(0.9) == "high"
+
+
+def test_closeness_band_medium():
+    assert _closeness_band(0.5) == "medium"
+    assert _closeness_band(0.4) == "medium"
+
+
+def test_closeness_band_low():
+    assert _closeness_band(0.3) == "low"
+    assert _closeness_band(-0.5) == "low"
+
+
+def test_closeness_band_none_on_non_numeric():
+    assert _closeness_band("x") is None
+    assert _closeness_band(None) is None
+
+
+def test_launcher_return_passthrough_exact():
+    assert launch_avatar("p", launcher=lambda p: f"opened:{p}") == \
+        "opened:p"
+
+
+def test_injected_launcher_writes_nothing(tmp_path):
+    import json
+    import os
+
+    from carrot.relationship import RelationshipState
+
+    state_path = tmp_path / "state.json"
+    rel_path = tmp_path / "relationship.json"
+    state_path.write_text(json.dumps({"version": 1}), encoding="utf-8")
+    rel_path.write_text(json.dumps(
+        RelationshipState(trust=0.6, closeness=0.6,
+                          updated_ts={}).to_dict()), encoding="utf-8")
+    mtime_state = os.stat(state_path).st_mtime_ns
+    mtime_rel = os.stat(rel_path).st_mtime_ns
+    assert launch_avatar(state_path, launcher=lambda p: "ok") == "ok"
+    assert os.stat(state_path).st_mtime_ns == mtime_state
+    assert os.stat(rel_path).st_mtime_ns == mtime_rel
