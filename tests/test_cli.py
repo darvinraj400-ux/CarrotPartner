@@ -35,6 +35,7 @@ from carrot.cli import (
     main,
 )
 from carrot.context import derive_context
+from carrot.avatar import AVATAR_UNAVAILABLE_MSG
 from carrot.drives import DriveState, DriveStore, DrivesConfig
 from carrot.tools import ToolsConfig, ToolRequest, decide
 from carrot.permissions import PermissionStore
@@ -1275,3 +1276,80 @@ def test_dbg_existing_content_intact():
 
 def test_help_lists_relationship():
     assert "/relationship" in HELP_TEXT
+
+
+# --- Slice 12 Phase 3: /avatar dispatch tests ---
+
+
+def _run_main_scripted(monkeypatch, lines, factory=None):
+    it = iter(lines)
+
+    def fake_input(*a, **k):
+        try:
+            return next(it)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setattr("carrot.cli.build_carrot",
+                        factory or (lambda: make_carrot()))
+    from carrot.cli import main
+
+    main([])
+
+
+def test_avatar_dispatch_calls_launcher_once(monkeypatch):
+    from tests.conftest import ROOT as _ROOT
+
+    calls = []
+    monkeypatch.setattr("carrot.cli.launch_avatar",
+                        lambda p: calls.append(p) or "sentinel-opened")
+
+    _run_main_scripted(monkeypatch, ["/avatar"])
+    assert len(calls) == 1
+    assert calls[0] == _ROOT / "state" / "state.json"
+
+
+def test_avatar_dispatch_prints_return(monkeypatch, capsys):
+    monkeypatch.setattr("carrot.cli.launch_avatar",
+                        lambda p: "sentinel-opened")
+    _run_main_scripted(monkeypatch, ["/avatar"])
+    assert "sentinel-opened" in capsys.readouterr().out
+
+
+def test_avatar_dispatch_no_window_in_tests(monkeypatch):
+    monkeypatch.setattr("carrot.cli.launch_avatar", lambda p: "ok")
+    _run_main_scripted(monkeypatch, ["/avatar"])
+    assert "tkinter" not in sys.modules
+
+
+def test_avatar_dispatch_degrade_message(monkeypatch, capsys):
+    monkeypatch.setattr("carrot.cli.launch_avatar",
+                        lambda p: AVATAR_UNAVAILABLE_MSG)
+    _run_main_scripted(monkeypatch, ["/avatar"])
+    assert AVATAR_UNAVAILABLE_MSG in capsys.readouterr().out
+
+
+def test_avatar_dispatch_no_state_change(monkeypatch, tmp_path):
+    c = make_carrot(memory_store=MemoryStore(str(tmp_path / "m.json")))
+    c.process_turn("hello there")
+    before_state = c.state.to_dict()
+    mtime_before = os.stat(c.memory_store.path).st_mtime_ns
+    monkeypatch.setattr("carrot.cli.launch_avatar", lambda p: "ok")
+    _run_main_scripted(monkeypatch, ["/avatar"], factory=lambda: c)
+    assert c.state.to_dict() == before_state
+    assert os.stat(c.memory_store.path).st_mtime_ns == mtime_before
+
+
+def test_commands_still_dispatch_after_avatar(monkeypatch, capsys):
+    monkeypatch.setattr("carrot.cli.launch_avatar", lambda p: "ok")
+    _run_main_scripted(monkeypatch, ["/dbg", "/ctx", "/relationship",
+                                     "/avatar"])
+    out = capsys.readouterr().out
+    assert "mood=" in out
+    assert "trust: medium" in out
+    assert "ok" in out
+
+
+def test_help_lists_avatar():
+    assert "/avatar" in HELP_TEXT

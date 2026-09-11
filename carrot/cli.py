@@ -6,6 +6,7 @@ import sys
 import time
 from pathlib import Path
 
+from .avatar import launch_avatar
 from .drives import drive_pull, update_rise
 from .environment import MockEnvironmentProbe
 from .initiative import ACTIVE_REASONS, should_initiate
@@ -25,7 +26,8 @@ HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "  /permissions view consents | /allow <tool> [always] grant | "
              "/revoke <tool> clear consent | /revoke-all clear all\n"
              "  /initiative show initiative decision\n"
-             "  /relationship show relationship")
+             "  /relationship show relationship\n"
+             "  /avatar open the desktop avatar (closes on window exit)")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
@@ -440,6 +442,9 @@ def main(argv=None) -> None:
             continue
         if line.strip() == "/relationship":
             print(format_relationship(carrot))
+            continue
+        if line.strip() == "/avatar":
+            print(launch_avatar(ROOT / "state" / "state.json"))
             continue
         if line.strip() == "/initiative":
             print(format_initiative(carrot))
