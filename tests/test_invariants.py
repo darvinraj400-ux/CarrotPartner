@@ -1452,3 +1452,68 @@ def test_voice_empty_msg_pinned():
     if msg is None:
         pytest.skip("constant lands in Phase 1")
     assert msg == "(heard nothing)"
+
+
+# --- Slice 14 Phase 0: channel boundary pins ---
+
+
+def test_channel_module_boundaries():
+    # Slice 14 boundary: channel.py holds the Channel protocol and
+    # file-based adapter only. It must never call the orchestrator, the
+    # CLI dispatcher, or the LLM. File I/O is the only side effect; no
+    # subprocess, no ctypes. A future live-server module (Option C,
+    # deferred) would need its own planner-visible pin.
+    path = ROOT / "carrot" / "channel.py"
+    if not path.exists():
+        pytest.skip("channel.py lands in Phase 1")
+    banned_mods = {"carrot", "cli", "llm"}
+    banned_calls = {"process_turn", "generate"}
+    banned_native = {"subprocess", "ctypes"}
+    offenders = []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if parts[0] in banned_mods or (parts[0] == "carrot"
+                                               and len(parts) > 1):
+                    offenders.append(a.name)
+                if parts[0] in banned_native:
+                    offenders.append(a.name)
+        elif isinstance(node, ast.ImportFrom):
+            mod_name = node.module or ""
+            parts = mod_name.split(".")
+            if node.level == 0 and (parts[0] in banned_mods or (
+                    parts[0] == "carrot" and len(parts) > 1)):
+                offenders.append(mod_name)
+            elif node.level > 0:
+                if parts and parts[0] in banned_mods:
+                    offenders.append(mod_name)
+                else:
+                    for a in node.names:
+                        if a.name in banned_mods:
+                            offenders.append(a.name)
+            if node.level == 0 and parts[0] in banned_native:
+                offenders.append(mod_name)
+        elif isinstance(node, ast.Call) \
+                and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in banned_calls:
+            offenders.append(node.func.attr)
+    assert offenders == []
+    mods = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            mods.add((node.module or "").split(".")[0])
+    allowed = set(sys.stdlib_module_names) | {"carrot"}
+    assert mods <= allowed, mods
+
+
+def test_channel_empty_msg_pinned():
+    """Slice 14: the empty-inbox message is contract, not accident."""
+    channel_mod = pytest.importorskip("carrot.channel")
+    msg = getattr(channel_mod, "CHANNEL_EMPTY_MSG", None)
+    if msg is None:
+        pytest.skip("constant lands in Phase 1")
+    assert msg == "(no messages)"
