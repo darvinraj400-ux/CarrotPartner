@@ -48,6 +48,7 @@ def test_store_and_config_injectable(tmp_path):
     from carrot.drives import DriveStore, DrivesConfig
     from carrot.emotions import EmotionState
     from carrot.environment import EnvironmentConfig
+    from carrot.episodes import EpisodeStore
     from carrot.initiative import InitiativeConfig, InitiativeStore
     from carrot.llm import MockLLM
     from carrot.memory import MemoryStore
@@ -85,6 +86,8 @@ def test_store_and_config_injectable(tmp_path):
         relationship_config=RelationshipConfig.load(
             str(custom_cfg_path)),
         relationship_store=custom_store,
+        episode_store=EpisodeStore(tmp_path / "episodes.json",
+                                   time_fn=clock),
         time_fn=clock,
     )
     assert c.relationship_store.path == custom_store.path
