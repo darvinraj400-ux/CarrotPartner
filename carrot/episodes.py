@@ -289,3 +289,108 @@ class EpisodeStore:
 
     def all(self) -> tuple:
         return self.load()
+
+
+def _merge_tokens(
+    existing: Sequence[str],
+    incoming: Sequence[str],
+    cap: int,
+) -> tuple[str, ...]:
+    """Append incoming after existing, dedup, keep the last `cap`.
+
+    Concatenate existing + incoming in that order, deduplicate
+    preserving the first occurrence of each token, and if the result
+    exceeds cap, keep the last cap entries (FIFO — oldest drop first).
+    Pure function.
+    """
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+        raise ValueError("bad merge cap")
+    seen: list[str] = []
+    for token in list(existing or ()) + list(incoming or ()):
+        if not isinstance(token, str):
+            raise ValueError("bad merge token")
+        if token not in seen:
+            seen.append(token)
+    return tuple(seen[-cap:])
+
+
+def derive(
+    episodes: Sequence[Episode],
+    turn_tokens: Sequence[str],
+    now: float,
+    mood_label: str,
+    *,
+    config: EpisodesConfig,
+    last_behavior: str | None = None,
+) -> tuple[Episode, ...]:
+    """Deterministically join-or-create an episode for the current turn.
+
+    - Empty episodes → return a single new episode for this turn.
+    - Else take the latest episode (max last_seen_ts).
+    - If (now - latest.last_seen_ts) <= config.join_window_s
+      AND overlap(latest.topic_tokens, turn_tokens) >= 1:
+        return episodes with latest replaced by an updated Episode.
+    - Else: return episodes with a new Episode appended.
+
+    Pure: no I/O, no clock, no mutation of inputs.
+    """
+    if not isinstance(config, EpisodesConfig):
+        raise ValueError("bad episodes config")
+    if isinstance(now, bool):
+        raise ValueError("bad episode timestamp")
+    try:
+        moment = float(now)
+    except (TypeError, ValueError):
+        raise ValueError("bad episode timestamp")
+    if moment < 0:
+        raise ValueError("bad episode timestamp")
+    try:
+        tokens = list(turn_tokens or ())
+    except TypeError:
+        raise ValueError("bad turn tokens")
+    for token in tokens:
+        if not isinstance(token, str) or not token:
+            raise ValueError("bad turn tokens")
+    if mood_label not in MOODS:
+        raise ValueError(f"bad episode mood_label: {mood_label!r}")
+    if last_behavior is not None and (
+            not isinstance(last_behavior, str) or not last_behavior):
+        raise ValueError("bad episode last_behavior")
+    items = list(episodes or ())
+
+    def _create() -> Episode:
+        seen: list[str] = []
+        for token in tokens:
+            if token not in seen:
+                seen.append(token)
+        return Episode(first_seen_ts=moment, last_seen_ts=moment,
+                       turn_count=1,
+                       topic_tokens=tuple(
+                           seen[:config.max_topic_tokens]),
+                       mood_label=mood_label,
+                       last_behavior=last_behavior)
+
+    if not items:
+        return (_create(),)
+    best_idx = 0
+    best_key = None
+    for index, episode in enumerate(items):
+        key = (episode.last_seen_ts, episode.first_seen_ts, index)
+        if best_key is None or key > best_key:
+            best_key = key
+            best_idx = index
+    latest = items[best_idx]
+    if (moment - latest.last_seen_ts) <= config.join_window_s and \
+            len(set(latest.topic_tokens) & set(tokens)) >= 1:
+        updated = Episode(
+            first_seen_ts=latest.first_seen_ts,
+            last_seen_ts=moment,
+            turn_count=latest.turn_count + 1,
+            topic_tokens=_merge_tokens(latest.topic_tokens, tokens,
+                                       config.max_topic_tokens),
+            mood_label=mood_label,
+            last_behavior=(last_behavior if last_behavior is not None
+                           else latest.last_behavior))
+        return tuple(updated if i == best_idx else e
+                     for i, e in enumerate(items))
+    return tuple(items) + (_create(),)

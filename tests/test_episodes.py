@@ -13,6 +13,8 @@ from carrot.episodes import (
     Episode,
     EpisodeStore,
     EpisodesConfig,
+    _merge_tokens,
+    derive,
 )
 from tests.conftest import ROOT
 
@@ -424,3 +426,225 @@ def test_store_deterministic(tmp_path):
     first.save((_ep(),))
     second.save((_ep(),))
     assert first.load() == second.load()
+
+
+# --- Episodic Continuity Phase 2: runtime content pin ---
+
+
+def test_episode_store_never_contains_turn_text(tmp_path):
+    # The current test suite has no structural defense against an episode
+    # store quietly becoming a transcript. This pin asserts that the raw
+    # user text of a turn never appears in the persisted episode file,
+    # even when the turn's tokens are stored. Combined with the AST field-
+    # name pin from Phase 0, this closes the DP1-for-episodes gap.
+    from carrot.context import tokenize
+
+    sentinel = "Hey, this is a SECRET-CODE-99 phrase!"
+    turn_tokens = tokenize(sentinel)
+    # Multi-word with digits, punctuation, mixed case, and stopwords:
+    # tokenization strips everything but the content tokens.
+    assert len(turn_tokens) >= 2
+    assert turn_tokens != (sentinel,)
+    store = EpisodeStore(tmp_path / "episodes.json")
+    (result,) = derive((), turn_tokens, 5000.0, "content",
+                       config=EpisodesConfig(),
+                       last_behavior="normal")
+    assert store.add(result) is True
+    raw = (tmp_path / "episodes.json").read_bytes().decode("utf-8")
+    # The tokens made it to disk (the pin is not vacuous)...
+    for token in turn_tokens:
+        assert token in raw
+    # ...but the verbatim turn text did not.
+    assert sentinel not in raw
+
+
+# --- Episodic Continuity Phase 2: derivation tests ---
+
+
+def _cfg(**over):
+    return EpisodesConfig(**over)
+
+
+def _old_ep(**over):
+    fields = dict(first_seen_ts=1000.0, last_seen_ts=2000.0, turn_count=2,
+                  topic_tokens=("garden", "rain"), mood_label="content",
+                  last_behavior="normal")
+    fields.update(over)
+    return Episode(**fields)
+
+
+def test_derive_empty_creates():
+    (got,) = derive((), ("garden", "soil"), 5000.0, "bright",
+                    config=_cfg(), last_behavior="curious")
+    assert got.turn_count == 1
+    assert got.first_seen_ts == got.last_seen_ts == 5000.0
+    assert got.topic_tokens == ("garden", "soil")
+    assert got.mood_label == "bright"
+    assert got.last_behavior == "curious"
+
+
+def test_derive_empty_no_behavior():
+    (got,) = derive((), ("garden",), 5000.0, "content", config=_cfg())
+    assert got.last_behavior is None
+
+
+def test_derive_empty_tokens_empty():
+    (got,) = derive((), (), 5000.0, "content", config=_cfg())
+    assert got.topic_tokens == ()
+    assert got.turn_count == 1
+
+
+def test_derive_create_appends(tmp_path):
+    first = _old_ep()
+    got = derive((first,), ("chess",), 9000.0, "content", config=_cfg())
+    assert len(got) == 2
+    assert got[0] == first
+    assert got[1].topic_tokens == ("chess",)
+    assert got[1].turn_count == 1
+
+
+def test_derive_join_updates_in_place():
+    first = _old_ep()
+    got = derive((first,), ("rain", "soil"), 2500.0, "bright",
+                 config=_cfg(), last_behavior="curious")
+    assert len(got) == 1
+    updated = got[0]
+    assert updated.turn_count == 3
+    assert updated.first_seen_ts == 1000.0
+    assert updated.last_seen_ts == 2500.0
+    assert updated.mood_label == "bright"
+    assert updated.last_behavior == "curious"
+    assert updated.topic_tokens == ("garden", "rain", "soil")
+
+
+def test_derive_join_preserves_behavior_when_none():
+    first = _old_ep()
+    (got,) = derive((first,), ("rain",), 2500.0, "content", config=_cfg())
+    assert got.last_behavior == "normal"
+
+
+def test_derive_join_merges_fifo_cap():
+    cfg = _cfg(max_topic_tokens=3)
+    first = _old_ep(topic_tokens=("a", "b", "c"))
+    (got,) = derive((first,), ("c", "d", "e"), 2500.0, "content", config=cfg)
+    assert got.topic_tokens == ("c", "d", "e")
+
+
+def test_derive_earlier_untouched():
+    first = _old_ep(first_seen_ts=100.0, last_seen_ts=200.0,
+                    topic_tokens=("chess",))
+    second = _old_ep()
+    got = derive((first, second), ("rain",), 2500.0, "content",
+                 config=_cfg())
+    assert got[0] == first
+    assert got[1].turn_count == 3
+
+
+def test_derive_exact_window_joins():
+    first = _old_ep()
+    got = derive((first,), ("rain",), 2000.0 + 1800.0, "content",
+                 config=_cfg())
+    assert len(got) == 1
+    assert got[0].turn_count == 3
+
+
+def test_derive_past_window_creates():
+    first = _old_ep()
+    got = derive((first,), ("rain",), 2000.0 + 1800.0 + 0.001, "content",
+                 config=_cfg())
+    assert len(got) == 2
+    assert got[0] == first
+
+
+def test_derive_zero_elapsed_joins():
+    first = _old_ep()
+    (got,) = derive((first,), ("garden",), 2000.0, "content",
+                    config=_cfg())
+    assert got.turn_count == 3
+
+
+def test_derive_pivot_creates():
+    first = _old_ep()
+    got = derive((first,), ("chess", "tournament"), 2500.0, "content",
+                 config=_cfg())
+    assert len(got) == 2
+    assert got[0] == first
+    assert got[1].topic_tokens == ("chess", "tournament")
+
+
+def test_derive_cross_day_creates():
+    first = _old_ep()
+    got = derive((first,), ("rain",), 2000.0 + 86400.0, "content",
+                 config=_cfg())
+    assert len(got) == 2
+    assert got[0] == first
+
+
+def test_derive_latest_by_last_seen():
+    older = _old_ep(first_seen_ts=100.0, last_seen_ts=3000.0,
+                    topic_tokens=("chess",))
+    newer = _old_ep(first_seen_ts=3500.0, last_seen_ts=4000.0,
+                    topic_tokens=("garden",))
+    got = derive((older, newer), ("garden",), 4500.0, "content",
+                 config=_cfg())
+    assert got[0] == older
+    assert got[1].turn_count == 3
+
+
+def test_merge_basic_order():
+    assert _merge_tokens(("a", "b"), ("c", "d"), 10) == ("a", "b", "c", "d")
+
+
+def test_merge_dedup_first():
+    assert _merge_tokens(("a", "b"), ("b", "c"), 10) == ("a", "b", "c")
+
+
+def test_merge_cap_fifo():
+    assert _merge_tokens(("a", "b", "c"), ("d", "e"), 3) == ("c", "d", "e")
+
+
+def test_merge_empty_incoming():
+    assert _merge_tokens(("a", "b"), (), 10) == ("a", "b")
+
+
+def test_merge_errors():
+    with pytest.raises(ValueError):
+        _merge_tokens(("a", 42), ("b",), 10)
+    with pytest.raises(ValueError):
+        _merge_tokens(("a",), ("b",), 0)
+    with pytest.raises(ValueError):
+        _merge_tokens(("a",), ("b",), -2)
+
+
+def test_derive_no_mutation():
+    first = _old_ep()
+    before = (first, first.to_dict())
+    got = derive((first,), ("rain",), 2500.0, "content", config=_cfg())
+    assert first == before[0]
+    assert first.to_dict() == before[1]
+    assert got[0] is not first
+
+
+def test_derive_deterministic():
+    args = ((_old_ep(),), ("rain",), 2500.0, "content")
+    first = derive(*args, config=_cfg(), last_behavior="curious")
+    second = derive(*args, config=_cfg(), last_behavior="curious")
+    assert first == second
+
+
+def test_derive_validation():
+    good = dict(config=_cfg())
+    with pytest.raises(ValueError):
+        derive((_old_ep(),), ("rain",), "now", "content", **good)
+    with pytest.raises(ValueError):
+        derive((_old_ep(),), ("rain",), -1.0, "content", **good)
+    with pytest.raises(ValueError):
+        derive((_old_ep(),), ("rain",), 2500.0, "manic", **good)
+    with pytest.raises(ValueError):
+        derive((_old_ep(),), ("rain",), 2500.0, "content", **good,
+               last_behavior="")
+    with pytest.raises(ValueError):
+        derive((_old_ep(),), ("rain", 42), 2500.0, "content", **good)
+    with pytest.raises(ValueError):
+        derive((_old_ep(),), ("rain",), 2500.0, "content",
+               config="not-a-config")
