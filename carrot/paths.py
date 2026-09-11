@@ -9,18 +9,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
 
+def _paths(root: Path) -> dict:
+    """Map of layout names to absolute paths for the default companion.
 
-def _paths(root: Path | None = None) -> dict:
-    """Map of layout names to absolute paths for the default companion."""
-    r = Path(root) if root is not None else ROOT
+    root is required: there is no fallback, so a caller can never
+    silently diverge from a patched project root in tests.
+    """
+    r = Path(root)
     state = r / "state"
     config = r / "config"
     return {
         "root": r,
         "state_dir": state,
         "state_json": state / "state.json",
+        "memories_json": state / "memories.json",
+        "drives_json": state / "drives.json",
         "permissions_json": state / "permissions.json",
         "relationship_json": state / "relationship.json",
         "initiative_json": state / "initiative.json",
