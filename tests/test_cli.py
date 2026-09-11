@@ -28,6 +28,7 @@ from carrot.cli import (
     handle_revoke_all,
     format_mem_debug,
     format_memories,
+    format_relationship,
     handle_ctx,
     handle_forget,
     handle_remember,
@@ -44,6 +45,7 @@ from carrot.environment import (
 )
 from carrot.initiative import ACTIVE_REASONS
 from carrot.memory import MAX_MEMORIES, Memory, MemoryStore
+from carrot.relationship import RelationshipState, RelationshipStore
 from tests.conftest import ROOT
 from tests.test_scenarios import FakeTime, make_carrot
 
@@ -1165,3 +1167,111 @@ def test_ctx_relevance_line_has_no_digits():
     c.process_turn("hello there")
     assert handle_ctx(c).splitlines()[-1] in ("relevance: yes",
                                               "relevance: no")
+
+
+# --- Slice 11 Phase 6: /relationship tests ---
+
+
+def _rel_carrot(tmp_path, trust, closeness, name="rel.json"):
+    store = RelationshipStore(tmp_path / name)
+    store.save(RelationshipState(trust=trust, closeness=closeness,
+                                 updated_ts={}))
+    return make_carrot(relationship_store=store)
+
+
+def test_relationship_fresh_state():
+    assert format_relationship(make_carrot()) == \
+        "trust: medium\ncloseness: medium"
+
+
+def test_relationship_band_low(tmp_path):
+    out = format_relationship(_rel_carrot(tmp_path, 0.2, 0.3))
+    assert out == "trust: low\ncloseness: low"
+
+
+def test_relationship_band_high(tmp_path):
+    out = format_relationship(_rel_carrot(tmp_path, 0.8, 0.9))
+    assert out == "trust: high\ncloseness: high"
+
+
+def test_relationship_boundary_low_medium(tmp_path):
+    assert format_relationship(
+        _rel_carrot(tmp_path, 0.4, 0.5, "a.json")).splitlines()[0] == \
+        "trust: medium"
+    assert format_relationship(
+        _rel_carrot(tmp_path, 0.399, 0.5, "b.json")).splitlines()[0] == \
+        "trust: low"
+
+
+def test_relationship_boundary_medium_high(tmp_path):
+    assert format_relationship(
+        _rel_carrot(tmp_path, 0.5, 0.7, "a.json")).splitlines()[1] == \
+        "closeness: high"
+    assert format_relationship(
+        _rel_carrot(tmp_path, 0.5, 0.699, "b.json")).splitlines()[1] == \
+        "closeness: medium"
+
+
+def test_relationship_no_digits(tmp_path):
+    for trust, closeness in ((0.5, 0.5), (0.2, 0.3), (0.8, 0.9),
+                             (0.4, 0.7), (0.0, 1.0)):
+        out = format_relationship(
+            _rel_carrot(tmp_path, trust, closeness,
+                        f"r-{trust}-{closeness}.json"))
+        assert re.search(r"\d", out) is None, (trust, closeness)
+
+
+def test_relationship_no_floats(tmp_path):
+    out = format_relationship(_rel_carrot(tmp_path, 0.83, 0.91))
+    assert "." not in out
+
+
+def test_relationship_line_order(tmp_path):
+    out = format_relationship(_rel_carrot(tmp_path, 0.2, 0.9))
+    assert out.index("trust:") < out.index("closeness:")
+
+
+def test_relationship_no_mutation(tmp_path):
+    path = tmp_path / "rel.json"
+    store = RelationshipStore(path)
+    store.save(RelationshipState(trust=0.6, closeness=0.6,
+                                 updated_ts={}))
+    c = make_carrot(relationship_store=store)
+    c.process_turn("You're cute, thanks!")
+    before_state = c.state.to_dict()
+    mtime_before = os.stat(path).st_mtime_ns
+    format_relationship(c)
+    assert c.state.to_dict() == before_state
+    assert os.stat(path).st_mtime_ns == mtime_before
+
+
+def test_relationship_deterministic(tmp_path):
+    first = _rel_carrot(tmp_path, 0.62, 0.38, "a.json")
+    second = _rel_carrot(tmp_path, 0.62, 0.38, "b.json")
+    assert format_relationship(first) == format_relationship(second)
+    assert format_relationship(first) == format_relationship(first)
+
+
+def test_dbg_includes_relationship_line():
+    out = format_dbg(make_carrot())
+    assert "relationship: trust=" in out
+    assert "closeness=" in out
+
+
+def test_dbg_relationship_shows_floats():
+    out = format_dbg(make_carrot())
+    assert re.search(
+        r"relationship: trust=\d+\.\d+ closeness=\d+\.\d+", out) is not None
+
+
+def test_dbg_existing_content_intact():
+    out = format_dbg(make_carrot())
+    assert "mood=" in out
+    assert "behavior=" in out
+    assert "social=" in out
+    assert "novelty=" in out
+    assert "environment:" in out
+
+
+def test_help_lists_relationship():
+    assert "/relationship" in HELP_TEXT

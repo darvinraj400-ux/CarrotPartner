@@ -10,6 +10,7 @@ from .drives import drive_pull, update_rise
 from .environment import MockEnvironmentProbe
 from .initiative import ACTIVE_REASONS, should_initiate
 from .memory import MAX_MEMORY_TEXT_CHARS, Memory
+from .relationship import DIMENSIONS
 from .tools import TOOLS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +24,8 @@ HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "/allow <tool> allow this session | /deny <tool> deny this session\n"
              "  /permissions view consents | /allow <tool> [always] grant | "
              "/revoke <tool> clear consent | /revoke-all clear all\n"
-             "  /initiative show initiative decision")
+             "  /initiative show initiative decision\n"
+             "  /relationship show relationship")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
@@ -220,6 +222,21 @@ def format_env(carrot) -> str:
             f"observed: {'yes' if observed else 'no'}")
 
 
+def _relationship_band(level: float) -> str:
+    if level >= 0.7:
+        return "high"
+    if level >= 0.4:
+        return "medium"
+    return "low"
+
+
+def format_relationship(carrot) -> str:
+    """User-facing relationship view. Reads only: labels, no floats."""
+    state = carrot.last_relationship
+    return "\n".join(f"{dim}: {_relationship_band(float(getattr(state, dim)))}"
+                     for dim in DIMENSIONS)
+
+
 def format_initiative(carrot) -> str:
     """Read-only initiative view: current decision + per-reason cooldowns."""
     now = carrot._now()
@@ -258,6 +275,9 @@ def format_dbg(carrot) -> str:
         else None
     idle = env.idle if env is not None else False
     lines.append(f"  environment: app={app} idle={idle}")
+    rel = carrot.last_relationship
+    lines.append(f"  relationship: trust={rel.trust:.2f} "
+                 f"closeness={rel.closeness:.2f}")
     return "\n".join(lines)
 
 def _load_json(name: str) -> dict:
@@ -417,6 +437,9 @@ def main(argv=None) -> None:
             continue
         if line.strip() == "/env":
             print(format_env(carrot))
+            continue
+        if line.strip() == "/relationship":
+            print(format_relationship(carrot))
             continue
         if line.strip() == "/initiative":
             print(format_initiative(carrot))
