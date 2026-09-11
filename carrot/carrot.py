@@ -59,6 +59,10 @@ _DRIVE_PULL_SENTENCES = {
     "novelty": "You've been wanting something new to happen.",
 }
 
+# Slice 10 fusion sentence: static, no interpolation, no parameters.
+# Fires only when the environment boost changed the recall top-k.
+_FUSION_SENTENCE = "Something here connects to what you've told me before."
+
 # Mirrors cli.py: StateStore lives at <project>/state/state.json, so the
 # default memory file lives next to it. Tests and callers pass an
 # explicit store instead.
@@ -99,7 +103,8 @@ def _memories_block(recalled) -> str:
 
 
 def _context_hint(context: ConversationContext, user_text: str,
-                  drive_pull=None, environment=None) -> str:
+                   drive_pull=None, environment=None,
+                   boost_effect: bool = False) -> str:
     lowered = str(user_text or "").strip().lower()
     answered = (bool(lowered) and not lowered.endswith("?")
                 and not _has_cue(lowered, _REPAIR_CUES)
@@ -122,6 +127,8 @@ def _context_hint(context: ConversationContext, user_text: str,
             parts.append("They're in the " + environment.app_noun + ".")
         if environment.idle:
             parts.append("They've been away for a bit.")
+    if boost_effect:
+        parts.append(_FUSION_SENTENCE)
     if not parts:
         return ""
     return " Context: " + " ".join(parts)
@@ -208,7 +215,8 @@ class Carrot:
                          context: ConversationContext,
                          user_text: str,
                          recalled=(), drive_pull=None,
-                         environment=EMPTY_SNAPSHOT) -> str:
+                         environment=EMPTY_SNAPSHOT,
+                         boost_effect: bool = False) -> str:
         degree = _BAND_WORDS.get(behavior.band, "a little")
         base = (
             f"{self.personality.sketch()} "
@@ -221,7 +229,8 @@ class Carrot:
         tools = " " + _TOOLS_BLOCK
         memories = _memories_block(recalled)
         context_hint = _context_hint(context, user_text, drive_pull,
-                                     environment)
+                                      environment,
+                                      boost_effect=boost_effect)
         return base + tools + memories + context_hint
 
     @staticmethod
@@ -333,7 +342,8 @@ class Carrot:
         # The second reply (if any) is final and never parsed for tools.
         system = self._system_prompt(behavior, ctx, str(text), recalled,
                                      drive_pull=self.last_drive_pull,
-                                     environment=self.last_environment)
+                                     environment=self.last_environment,
+                                     boost_effect=self.last_boost_effect)
         history = self.buffer.history_for_llm()
         user_str = str(text)
         reply = self.llm.generate(system=system, history=history,

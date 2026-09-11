@@ -8,9 +8,12 @@ import pytest
 
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
-from carrot.carrot import _TOOLS_BLOCK
+from carrot.carrot import _FUSION_SENTENCE, _TOOLS_BLOCK, _context_hint
+from carrot.context import ConversationContext
 from carrot.drives import DriveState, DriveStore
-from carrot.environment import MockEnvironmentProbe, RawObservation
+from carrot.environment import (EnvironmentSnapshot, MockEnvironmentProbe,
+                                RawObservation)
+from carrot.memory import Memory
 from carrot.personality import Personality
 from carrot.tools import ToolRequest, ToolsConfig, decide
 
@@ -1004,3 +1007,90 @@ def test_no_new_state_files():
             if name not in _ALLOWED_JSON_BASENAMES:
                 offenders.append((path.name, name))
     assert offenders == []
+
+
+# --- Slice 10 Phase 3: fusion sentence tests ---
+
+
+def _fusion_carrot(memories):
+    c = make_carrot()
+    c.environment_probe = MockEnvironmentProbe(
+        [RawObservation("chrome.exe", False)])
+    for text, created in memories:
+        c.memory_store.add(Memory(text=text, kind="fact", importance=0.5,
+                                  created_ts=created,
+                                  last_recalled_ts=1_000_000.0))
+    return c
+
+
+def test_fusion_sentence_static_and_clean():
+    assert _FUSION_SENTENCE == \
+        "Something here connects to what you've told me before."
+    assert re.search(r"\d", _FUSION_SENTENCE) is None
+    assert '"' not in _FUSION_SENTENCE
+    lowered = _FUSION_SENTENCE.lower()
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_fusion_last_among_all_hint_parts():
+    ctx = ConversationContext(playful_frame=True, recent_harshness=True,
+                              recent_topics=("gardening",))
+    env = EnvironmentSnapshot(app_noun="browser", idle=True)
+    hint = _context_hint(ctx, "I'm kidding.", drive_pull="social",
+                         environment=env, boost_effect=True)
+    idx_playful = hint.index("The conversation has been playful.")
+    idx_repair = hint.index("walking back what they said")
+    idx_topics = hint.index("Recent topics: gardening")
+    idx_drive = hint.index("You've been wanting to talk to them.")
+    idx_app = hint.index("They're in the browser.")
+    idx_idle = hint.index("They've been away for a bit.")
+    idx_fusion = hint.index(_FUSION_SENTENCE)
+    assert idx_playful < idx_repair < idx_topics < idx_drive < idx_app \
+        < idx_idle < idx_fusion
+
+
+def test_fusion_only_part_renders_block():
+    hint = _context_hint(ConversationContext(), "12345 !!!",
+                         boost_effect=True)
+    assert hint == " Context: " + _FUSION_SENTENCE
+    # Omission preserved: no boost, no block (Phase 2 byte-identity).
+    assert _context_hint(ConversationContext(), "12345 !!!",
+                         boost_effect=False) == ""
+
+
+def test_fusion_skeleton_clean_with_boost():
+    c = _fusion_carrot([("i love pizza", 100.0),
+                        ("my browser tabs are many", 200.0)])
+    c.process_turn("hello there")
+    assert c.last_boost_effect is True
+    assert _FUSION_SENTENCE in c.llm.last_system
+    skeleton = _skeleton(c.llm.last_system)
+    assert re.search(r"\d", skeleton) is None
+    lowered = skeleton.lower()
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_fusion_skeleton_clean_with_adversarial_memories():
+    # Digits ("May 3") and a state name ("anger") ride inside quoted
+    # memory spans; the skeleton strips them, and the fusion sentence
+    # itself carries no data.
+    c = _fusion_carrot([("my birthday is May 3", 100.0),
+                        ("my anger issues", 200.0),
+                        ("my browser tabs are many", 300.0)])
+    c.process_turn("hello there")
+    assert c.last_boost_effect is True
+    assert _FUSION_SENTENCE in c.llm.last_system
+    assert '"my birthday is May 3"' in c.llm.last_system  # recalled
+    skeleton = _skeleton(c.llm.last_system)
+    assert re.search(r"\d", skeleton) is None
+    lowered = skeleton.lower()
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word

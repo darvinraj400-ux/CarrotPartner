@@ -9,6 +9,7 @@ import pytest
 from carrot.appraisal import Appraisal
 from carrot.behavior import BehaviorSelector
 from carrot.carrot import Carrot
+from carrot.carrot import _FUSION_SENTENCE
 from carrot.classifier import DeterministicClassifier
 from carrot.conversation import ConversationBuffer
 from carrot.emotions import EmotionState
@@ -345,3 +346,31 @@ def test_empty_env_prompt_path_unchanged():
     assert [m.text for m in c.last_recalled] == \
         ["i love pizza", "my browser tabs are many"]
     assert "They're in the" not in c.llm.last_system
+
+
+# --- Slice 10 Phase 3: fusion sentence integration tests ---
+
+
+def test_fusion_sentence_present_when_boost_changed_topk():
+    c = _browser_carrot()
+    c.process_turn("hello there")
+    assert c.last_boost_effect is True
+    assert _FUSION_SENTENCE in c.llm.last_system
+
+
+def test_fusion_sentence_absent_when_no_boost():
+    c = make_carrot()
+    c.environment_probe = MockEnvironmentProbe([])
+    _seed_boost_memories(c)
+    c.process_turn("hello there")
+    assert c.last_boost_effect is False
+    assert _FUSION_SENTENCE not in c.llm.last_system
+
+
+def test_fusion_sentence_deterministic():
+    first = _browser_carrot()
+    second = _browser_carrot()
+    first.process_turn("hello there")
+    second.process_turn("hello there")
+    assert _FUSION_SENTENCE in first.llm.last_system
+    assert first.llm.last_system == second.llm.last_system
