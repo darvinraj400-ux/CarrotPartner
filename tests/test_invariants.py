@@ -1517,3 +1517,97 @@ def test_channel_empty_msg_pinned():
     if msg is None:
         pytest.skip("constant lands in Phase 1")
     assert msg == "(no messages)"
+
+
+# --- Slice 15 Phase 0: social boundary pins ---
+
+
+def test_social_module_boundaries():
+    # Slice 15 boundary: social.py holds the Channel-reusing adapter and
+    # config only. No orchestrator, CLI, or LLM contact. No subprocess,
+    # ctypes, threads, or schedulers — a manual-mode file bridge needs
+    # none.
+    path = ROOT / "carrot" / "social.py"
+    if not path.exists():
+        pytest.skip("social.py lands in Phase 1")
+    banned_mods = {"carrot", "cli", "llm"}
+    banned_calls = {"process_turn", "generate"}
+    banned_native = {"subprocess", "ctypes", "threading", "asyncio",
+                     "sched", "multiprocessing", "Timer"}
+    offenders = []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if parts[0] in banned_mods or (parts[0] == "carrot"
+                                               and len(parts) > 1):
+                    offenders.append(a.name)
+                if parts[0] in banned_native:
+                    offenders.append(a.name)
+                for a2 in node.names:
+                    if a2.name in banned_native:
+                        offenders.append(a2.name)
+        elif isinstance(node, ast.ImportFrom):
+            mod_name = node.module or ""
+            parts = mod_name.split(".")
+            if node.level == 0 and (parts[0] in banned_mods or (
+                    parts[0] == "carrot" and len(parts) > 1)):
+                offenders.append(mod_name)
+            elif node.level > 0:
+                if parts and parts[0] in banned_mods:
+                    offenders.append(mod_name)
+                else:
+                    for a in node.names:
+                        if a.name in banned_mods:
+                            offenders.append(a.name)
+            if node.level == 0 and parts[0] in banned_native:
+                offenders.append(mod_name)
+            for a in node.names:
+                if a.name in banned_native:
+                    offenders.append(a.name)
+        elif isinstance(node, ast.Call) \
+                and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in banned_calls:
+            offenders.append(node.func.attr)
+    assert offenders == []
+    mods = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            mods.add((node.module or "").split(".")[0])
+    allowed = set(sys.stdlib_module_names) | {"carrot"}
+    assert mods <= allowed, mods
+
+
+def test_social_config_no_secrets():
+    # Slice 15 boundary: config/ is committed (not gitignored). No
+    # secret-shaped key may ever appear there. Future credentials live in
+    # state/social/<platform>/credentials.json (gitignored via state/).
+    # This pin preempts the leak class before its first victim.
+    path = ROOT / "config" / "social.json"
+    if not path.exists():
+        pytest.skip("config/social.json lands in Phase 1")
+    import json
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    banned = {"token", "secret", "password", "api_key", "apikey",
+              "auth", "credential", "oauth"}
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if str(key).lower() in banned:
+                    return key
+                hit = walk(value)
+                if hit is not None:
+                    return hit
+        elif isinstance(node, list):
+            for item in node:
+                hit = walk(item)
+                if hit is not None:
+                    return hit
+        return None
+
+    assert walk(data) is None
