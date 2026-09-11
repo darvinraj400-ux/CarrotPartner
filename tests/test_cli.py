@@ -1868,3 +1868,146 @@ def test_make_carrot_companion_default():
 
 def test_help_lists_companions():
     assert "/companions" in HELP_TEXT
+
+
+# --- Episodic Continuity Phase 6: /episodes + /forget-episode ---
+
+
+def _episodes_carrot(token_lists):
+    from carrot.episodes import Episode
+
+    c = make_carrot()
+    for i, tokens in enumerate(token_lists):
+        c.episode_store.add(Episode(
+            first_seen_ts=float(1000 + i * 100),
+            last_seen_ts=float(1100 + i * 100),
+            turn_count=i + 1,
+            topic_tokens=tuple(tokens),
+            mood_label="content", last_behavior=None))
+    return c
+
+
+def test_episodes_view_empty():
+    from carrot.cli import format_episodes
+
+    assert format_episodes(make_carrot()) == "(no episodes yet)"
+
+
+def test_episodes_view_single():
+    from carrot.cli import format_episodes
+
+    c = _episodes_carrot([("garden", "rain")])
+    assert format_episodes(c) == "1t garden, rain"
+
+
+def test_episodes_view_ordered():
+    from carrot.cli import format_episodes
+
+    c = _episodes_carrot([("chess",), ("garden", "rain")])
+    assert format_episodes(c).splitlines() == [
+        "1t chess", "2t garden, rain"]
+
+
+def test_episodes_view_empty_tokens():
+    from carrot.cli import format_episodes
+
+    c = _episodes_carrot([()])
+    assert format_episodes(c) == "1t"
+
+
+def test_episodes_view_no_mutation(tmp_path):
+    from carrot.cli import format_episodes
+    from carrot.episodes import EpisodeStore
+
+    path = tmp_path / "episodes.json"
+    c = make_carrot(
+        episode_store=EpisodeStore(path))
+    only = _episodes_carrot([("garden",)]).episode_store.all()[0]
+    c.episode_store.add(only)
+    before = (path.stat().st_mtime_ns, path.read_bytes())
+    first = format_episodes(c)
+    assert (path.stat().st_mtime_ns, path.read_bytes()) == before
+    assert format_episodes(c) == first
+
+
+def test_forget_episode_match():
+    from carrot.cli import handle_forget_episode
+
+    c = _episodes_carrot([("garden", "rain"), ("garden", "soup"),
+                          ("chess",)])
+    assert handle_forget_episode(c, "garden") == "forgot 2"
+    assert [e.topic_tokens for e in c.episode_store.all()] == \
+        [("chess",)]
+
+
+def test_forget_episode_no_match():
+    from carrot.cli import handle_forget_episode
+
+    c = _episodes_carrot([("garden",)])
+    assert handle_forget_episode(c, "zebra") == "no matches"
+    assert len(c.episode_store.all()) == 1
+
+
+def test_forget_episode_empty_arg():
+    from carrot.cli import handle_forget_episode
+
+    c = _episodes_carrot([("garden",)])
+    assert handle_forget_episode(c, "") == \
+        "usage: /forget-episode <substring>"
+    assert handle_forget_episode(c, "   ") == \
+        "usage: /forget-episode <substring>"
+    assert len(c.episode_store.all()) == 1
+
+
+def test_forget_episode_case_insensitive():
+    from carrot.cli import handle_forget_episode
+
+    c = _episodes_carrot([("work", "deadline")])
+    assert handle_forget_episode(c, "WORK") == "forgot 1"
+    assert c.episode_store.all() == ()
+
+
+def test_forget_episode_persisted(tmp_path):
+    from carrot.cli import handle_forget_episode
+    from carrot.episodes import Episode, EpisodeStore
+
+    path = tmp_path / "episodes.json"
+    c = make_carrot(episode_store=EpisodeStore(path))
+    c.episode_store.add(Episode(first_seen_ts=1000.0, last_seen_ts=1100.0,
+                                turn_count=1, topic_tokens=("garden",),
+                                mood_label="content", last_behavior=None))
+    assert handle_forget_episode(c, "garden") == "forgot 1"
+    assert EpisodeStore(path).load() == ()
+
+
+def test_dispatch_episodes(monkeypatch, capsys):
+    c = _episodes_carrot([("garden", "rain")])
+    _run_main_scripted(monkeypatch, ["/episodes"], factory=lambda: c)
+    assert "1t garden, rain" in capsys.readouterr().out
+
+
+def test_dispatch_forget_episode(monkeypatch, capsys):
+    c = _episodes_carrot([("garden", "rain")])
+    _run_main_scripted(monkeypatch, ["/forget-episode garden"],
+                       factory=lambda: c)
+    assert "forgot 1" in capsys.readouterr().out
+    assert c.episode_store.all() == ()
+
+
+def test_forget_episode_not_shadowed(monkeypatch, capsys):
+    from carrot.memory import Memory
+
+    c = _episodes_carrot([("episode", "notes")])
+    c.memory_store.add(Memory(text="my episode idea", kind="fact",
+                              importance=0.5, created_ts=1000.0,
+                              last_recalled_ts=1000.0))
+    _run_main_scripted(monkeypatch, ["/forget-episode episode"],
+                       factory=lambda: c)
+    assert "forgot 1" in capsys.readouterr().out
+    assert c.episode_store.all() == ()
+    assert len(c.memory_store.all()) == 1
+
+
+def test_help_lists_episodes():
+    assert "/episodes" in HELP_TEXT
+    assert "/forget-episode" in HELP_TEXT

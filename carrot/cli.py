@@ -56,9 +56,12 @@ HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "  /voice one voice turn (mock recognizer/synth)\n"
              "  /drain process queued channel messages\n"
              "  /social show social platform status\n"
-             "  /companions list all known companions")
+             "  /companions list all known companions\n"
+             "  /episodes list stored episodes\n"
+             "  /forget-episode <substring> delete matching episodes")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
+NO_EPISODES_YET = "(no episodes yet)"
 
 
 def format_ctx(ctx, boost_effect: bool = False) -> str:
@@ -103,6 +106,23 @@ def format_mem_debug(store) -> str:
         for m in mems)
 
 
+def format_episodes(carrot) -> str:
+    """Read-only view of stored episodes, oldest first.
+
+    No floats. No timestamps. No internal identifiers. No mood labels.
+    """
+    episodes = carrot.episode_store.all()
+    if not episodes:
+        return NO_EPISODES_YET
+    ordered = sorted(episodes,
+                     key=lambda e: (e.first_seen_ts, e.last_seen_ts))
+    lines = []
+    for episode in ordered:
+        joined = ", ".join(episode.topic_tokens)
+        lines.append(f"{episode.turn_count}t {joined}".rstrip())
+    return "\n".join(lines)
+
+
 def handle_remember(carrot, arg: str) -> str:
     text = str(arg or "").strip()
     if not text:
@@ -124,6 +144,16 @@ def handle_forget(carrot, arg: str) -> str:
     if not substring:
         return "usage: /forget <substring>"
     removed = carrot.memory_store.remove_matching(substring)
+    if removed == 0:
+        return "no matches"
+    return f"forgot {removed}"
+
+
+def handle_forget_episode(carrot, arg: str) -> str:
+    substring = str(arg or "").strip()
+    if not substring:
+        return "usage: /forget-episode <substring>"
+    removed = carrot.episode_store.remove_matching(substring)
     if removed == 0:
         return "no matches"
     return f"forgot {removed}"
@@ -665,6 +695,9 @@ def main(argv=None) -> None:
         if line.strip() == "/mem":
             print(format_mem_debug(carrot.memory_store))
             continue
+        if line.strip() == "/episodes":
+            print(format_episodes(carrot))
+            continue
         if line.strip() == "/drives":
             print(format_drives(carrot.drive_store, carrot.drives_config))
             continue
@@ -748,6 +781,11 @@ def main(argv=None) -> None:
         if (line.strip() == "/forget"
                 or line.strip().startswith("/forget ")):
             print(handle_forget(carrot, line.strip()[len("/forget"):]))
+            continue
+        if (line.strip() == "/forget-episode"
+                or line.strip().startswith("/forget-episode ")):
+            print(handle_forget_episode(
+                carrot, line.strip()[len("/forget-episode"):]))
             continue
         reply = carrot.process_turn(line)
         carrot.store.save(carrot.state)
