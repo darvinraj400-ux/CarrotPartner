@@ -13,6 +13,13 @@ from .initiative import ACTIVE_REASONS, should_initiate
 from .memory import MAX_MEMORY_TEXT_CHARS, Memory
 from .relationship import DIMENSIONS
 from .tools import TOOLS
+from .voice import (
+    VOICE_EMPTY_MSG,
+    MockSpeechRecognizer,
+    MockSpeechSynthesizer,
+    SpeechRecognizer,
+    SpeechSynthesizer,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,7 +34,8 @@ HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "/revoke <tool> clear consent | /revoke-all clear all\n"
              "  /initiative show initiative decision\n"
              "  /relationship show relationship\n"
-             "  /avatar open the desktop avatar (closes on window exit)")
+             "  /avatar open the desktop avatar (closes on window exit)\n"
+             "  /voice one voice turn (mock recognizer/synth)")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
@@ -398,6 +406,36 @@ def _run_away_mode(carrot, max_n: int) -> None:
         carrot.initiative_store.record_fire(decision.reason, now)
 
 
+def run_voice_turn(
+    carrot,
+    recognizer: SpeechRecognizer,
+    synthesizer: SpeechSynthesizer,
+) -> tuple[str, str]:
+    """Perform one bounded voice turn.
+
+      1. Ask the recognizer for one utterance.
+      2. If the transcript is empty (or whitespace-only), return
+         ("", "") — no turn burned, no synth called.
+      3. Otherwise run carrot.process_turn(transcript).
+      4. Speak the reply via the synthesizer.
+      5. Return (transcript, reply) so the caller can print both.
+
+    Bounded: exactly one listen() and at most one speak(). No loop.
+    Never raises on empty input. Does not write state directly
+    (process_turn handles state; the caller saves).
+    """
+    transcript = recognizer.listen()
+    if not transcript or not str(transcript).strip():
+        return ("", "")
+    transcript = str(transcript)
+    reply = carrot.process_turn(transcript)
+    try:
+        synthesizer.speak(reply)
+    except Exception:
+        pass  # voice output must never break a turn
+    return (transcript, reply)
+
+
 def main(argv=None) -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -445,6 +483,18 @@ def main(argv=None) -> None:
             continue
         if line.strip() == "/avatar":
             print(launch_avatar(ROOT / "state" / "state.json"))
+            continue
+        if line.strip() == "/voice":
+            recognizer = MockSpeechRecognizer()
+            synthesizer = MockSpeechSynthesizer()
+            transcript, reply = run_voice_turn(carrot, recognizer,
+                                               synthesizer)
+            if not transcript:
+                print(VOICE_EMPTY_MSG)
+            else:
+                print(f"heard: {transcript}")
+                print(f"carrot: {reply}")
+            carrot.store.save(carrot.state)
             continue
         if line.strip() == "/initiative":
             print(format_initiative(carrot))

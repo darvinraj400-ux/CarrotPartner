@@ -1,9 +1,11 @@
 """Slice 13 Phase-1 tests: voice protocols and mocks (pure, headless)."""
+from carrot.cli import run_voice_turn
 from carrot.voice import (
     VOICE_EMPTY_MSG,
     MockSpeechRecognizer,
     MockSpeechSynthesizer,
 )
+from tests.test_scenarios import make_carrot
 
 
 # ---- constant ----
@@ -110,3 +112,73 @@ def test_voice_mocks_deterministic():
     assert [first.listen(), first.listen()] == \
         [second.listen(), second.listen()]
     assert first.listen_count == second.listen_count == 2
+
+
+# --- Slice 13 Phase 2: run_voice_turn tests ---
+
+
+def test_run_voice_turn_empty_returns_pair():
+    c = make_carrot()
+    synth = MockSpeechSynthesizer()
+    assert run_voice_turn(c, MockSpeechRecognizer([]),
+                          synth) == ("", "")
+    assert synth.spoken == []
+    assert len(c.buffer) == 0
+
+
+def test_run_voice_turn_whitespace_returns_pair():
+    c = make_carrot()
+    synth = MockSpeechSynthesizer()
+    assert run_voice_turn(c, MockSpeechRecognizer(["   "]),
+                          synth) == ("", "")
+    assert synth.spoken == []
+    assert len(c.buffer) == 0
+
+
+def test_run_voice_turn_valid_returns_pair():
+    c = make_carrot()
+    transcript, reply = run_voice_turn(c,
+                                       MockSpeechRecognizer(["hello"]),
+                                       MockSpeechSynthesizer())
+    assert transcript == "hello"
+    assert isinstance(reply, str) and reply
+
+
+def test_run_voice_turn_speaks_reply():
+    c = make_carrot()
+    synth = MockSpeechSynthesizer()
+    _, reply = run_voice_turn(c, MockSpeechRecognizer(["hello"]), synth)
+    assert synth.spoken == [reply]
+
+
+def test_run_voice_turn_speak_failure_swallowed():
+    class LoudSynth:
+        def speak(self, text):
+            raise RuntimeError("speaker unplugged")
+
+    c = make_carrot()
+    transcript, reply = run_voice_turn(c, MockSpeechRecognizer(["hello"]),
+                                       LoudSynth())
+    assert transcript == "hello"
+    assert isinstance(reply, str) and reply
+
+
+def test_run_voice_turn_saves_nothing_itself(tmp_path):
+    from carrot.state_store import StateStore
+
+    c = make_carrot()
+    path = tmp_path / "state.json"
+    c.store = StateStore(str(path))
+    run_voice_turn(c, MockSpeechRecognizer(["hello"]),
+                   MockSpeechSynthesizer())
+    assert not path.exists()
+
+
+def test_run_voice_turn_deterministic():
+    first = make_carrot()
+    second = make_carrot()
+    one = run_voice_turn(first, MockSpeechRecognizer(["hello"]),
+                         MockSpeechSynthesizer())
+    two = run_voice_turn(second, MockSpeechRecognizer(["hello"]),
+                         MockSpeechSynthesizer())
+    assert one == two

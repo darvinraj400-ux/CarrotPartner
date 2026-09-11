@@ -36,6 +36,8 @@ from carrot.cli import (
 )
 from carrot.context import derive_context
 from carrot.avatar import AVATAR_UNAVAILABLE_MSG
+from carrot.state_store import StateStore
+from carrot.voice import VOICE_EMPTY_MSG
 from carrot.drives import DriveState, DriveStore, DrivesConfig
 from carrot.tools import ToolsConfig, ToolRequest, decide
 from carrot.permissions import PermissionStore
@@ -1353,3 +1355,87 @@ def test_commands_still_dispatch_after_avatar(monkeypatch, capsys):
 
 def test_help_lists_avatar():
     assert "/avatar" in HELP_TEXT
+
+
+# --- Slice 13 Phase 2: /voice dispatch tests ---
+
+
+def _voice_carrot(tmp_path):
+    c = make_carrot()
+    c.store = StateStore(str(tmp_path / "state.json"))
+    return c
+
+
+def test_voice_dispatch_empty(monkeypatch, capsys, tmp_path):
+    from carrot.voice import MockSpeechRecognizer, MockSpeechSynthesizer
+
+    c = _voice_carrot(tmp_path)
+    monkeypatch.setattr("carrot.cli.MockSpeechRecognizer",
+                        lambda: MockSpeechRecognizer([]))
+    monkeypatch.setattr("carrot.cli.MockSpeechSynthesizer",
+                        MockSpeechSynthesizer)
+    before_buffer = list(c.buffer.recent())
+    _run_main_scripted(monkeypatch, ["/voice"], factory=lambda: c)
+    out = capsys.readouterr().out
+    assert VOICE_EMPTY_MSG in out
+    assert list(c.buffer.recent()) == before_buffer
+
+
+def test_voice_dispatch_non_empty(monkeypatch, capsys, tmp_path):
+    from carrot.voice import MockSpeechRecognizer, MockSpeechSynthesizer
+
+    c = _voice_carrot(tmp_path)
+    monkeypatch.setattr("carrot.cli.MockSpeechRecognizer",
+                        lambda: MockSpeechRecognizer(["hello there"]))
+    monkeypatch.setattr("carrot.cli.MockSpeechSynthesizer",
+                        MockSpeechSynthesizer)
+    _run_main_scripted(monkeypatch, ["/voice"], factory=lambda: c)
+    out = capsys.readouterr().out
+    assert "heard: hello there" in out
+    assert "carrot: " in out
+    texts = [t.text for t in c.buffer.recent()]
+    assert "hello there" in texts
+
+
+def test_voice_dispatch_saves_state(monkeypatch, tmp_path):
+    from carrot.voice import MockSpeechRecognizer, MockSpeechSynthesizer
+
+    path = tmp_path / "state.json"
+    c = make_carrot()
+    c.store = StateStore(str(path))
+    assert not path.exists()
+    monkeypatch.setattr("carrot.cli.MockSpeechRecognizer",
+                        lambda: MockSpeechRecognizer(["hello"]))
+    monkeypatch.setattr("carrot.cli.MockSpeechSynthesizer",
+                        MockSpeechSynthesizer)
+    _run_main_scripted(monkeypatch, ["/voice"], factory=lambda: c)
+    assert path.exists()
+
+
+def test_voice_dispatch_no_audio_device(monkeypatch, tmp_path):
+    from carrot.voice import MockSpeechRecognizer, MockSpeechSynthesizer
+
+    c = _voice_carrot(tmp_path)
+    monkeypatch.setattr("carrot.cli.MockSpeechRecognizer",
+                        MockSpeechRecognizer)
+    monkeypatch.setattr("carrot.cli.MockSpeechSynthesizer",
+                        MockSpeechSynthesizer)
+    _run_main_scripted(monkeypatch, ["/voice"], factory=lambda: c)
+    assert "tkinter" not in sys.modules
+
+
+def test_voice_dispatch_empty_touches_no_llm(monkeypatch, tmp_path):
+    from carrot.voice import MockSpeechRecognizer, MockSpeechSynthesizer
+
+    c = _voice_carrot(tmp_path)
+    monkeypatch.setattr("carrot.cli.MockSpeechRecognizer",
+                        lambda: MockSpeechRecognizer([]))
+    monkeypatch.setattr("carrot.cli.MockSpeechSynthesizer",
+                        MockSpeechSynthesizer)
+    before = c.llm._counter
+    _run_main_scripted(monkeypatch, ["/voice"], factory=lambda: c)
+    assert c.llm._counter == before
+
+
+def test_help_lists_voice():
+    assert "/voice" in HELP_TEXT
