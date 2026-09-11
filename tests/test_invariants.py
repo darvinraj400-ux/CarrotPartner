@@ -1266,3 +1266,123 @@ def test_relationship_skeleton_clean_adversarial(tmp_path):
         assert re.search(rf"\b{word}\b", lowered) is None, word
     for word in _STATE_NAMES:
         assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+# --- Slice 12 Phase 0: avatar boundary pins ---
+
+
+def _enclosing_funcs(tree):
+    """Map every node to its enclosing function name (None at top)."""
+    found = {}
+
+    def walk(node, func):
+        found[id(node)] = func
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                walk(child, child.name)
+            else:
+                walk(child, func)
+
+    walk(tree, None)
+    return found
+
+
+def test_mainloop_only_in_avatar_entry():
+    # Slice 12 boundary: exactly one GUI pump, in avatar.launch_avatar.
+    # The existing while-True matcher cannot see mainloop(); this pin is the
+    # explicit sanction. Any second mainloop — in this file or elsewhere —
+    # fails loudly.
+    path = ROOT / "carrot" / "avatar.py"
+    if not path.exists():
+        pytest.skip("avatar.py lands in Phase 2")
+    sites = set()
+    for mod in (ROOT / "carrot").glob("*.py"):
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
+        owners = _enclosing_funcs(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) \
+                    and isinstance(node.func, ast.Attribute) \
+                    and node.func.attr == "mainloop":
+                sites.add((mod.name, owners[id(node)]))
+    assert sites == {("avatar.py", "launch_avatar")}
+
+
+def test_no_tkinter_after():
+    # Slice 12 boundary: no scheduled callbacks. after()/after_idle() are
+    # schedulers in disguise — a foot-in-the-door for autonomous loops.
+    # Refresh is user-triggered only. If a future slice wants polling, it
+    # must retire this pin with a planner-visible diff.
+    offenders = []
+    for mod in (ROOT / "carrot").glob("*.py"):
+        tree = ast.parse(mod.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) \
+                    and isinstance(node.func, ast.Attribute) \
+                    and node.func.attr in ("after", "after_idle"):
+                offenders.append((mod.name, node.lineno))
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name.split(".")[0] == "tkinter" \
+                            and mod.name != "avatar.py":
+                        offenders.append((mod.name, a.name))
+            elif isinstance(node, ast.ImportFrom):
+                mod_name = (node.module or "").split(".")[0]
+                if node.level == 0 and mod_name == "tkinter" \
+                        and mod.name != "avatar.py":
+                    offenders.append((mod.name, node.module))
+    assert offenders == []
+
+
+def test_avatar_module_boundaries():
+    # Slice 12 boundary: the avatar is a read-only expression layer.
+    # It may read state via state_store/memory (read-only stores) and may
+    # use stdlib + tkinter. It must never touch the orchestrator, the CLI
+    # dispatcher, or the LLM. These are the invariants that keep Slice 12
+    # a presentation layer rather than a second brain.
+    path = ROOT / "carrot" / "avatar.py"
+    if not path.exists():
+        pytest.skip("avatar.py lands in Phase 2")
+    banned_mods = {"carrot", "cli", "llm"}
+    banned_calls = {"process_turn", "generate"}
+    offenders = []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if parts[0] in banned_mods or (parts[0] == "carrot"
+                                               and len(parts) > 1):
+                    offenders.append(a.name)
+        elif isinstance(node, ast.ImportFrom):
+            mod_name = node.module or ""
+            parts = mod_name.split(".")
+            if node.level == 0 and (parts[0] in banned_mods or (
+                    parts[0] == "carrot" and len(parts) > 1)):
+                offenders.append(mod_name)
+            elif node.level > 0:
+                if parts and parts[0] in banned_mods:
+                    offenders.append(mod_name)
+                else:
+                    for a in node.names:
+                        if a.name in banned_mods:
+                            offenders.append(a.name)
+        elif isinstance(node, ast.Call) \
+                and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in banned_calls:
+            offenders.append(node.func.attr)
+    assert offenders == []
+    mods = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            mods.add((node.module or "").split(".")[0])
+    allowed = set(sys.stdlib_module_names) | {"carrot"}
+    assert mods <= allowed, mods
+
+
+def test_avatar_degrade_message_pinned():
+    """Slice 12: the degrade message is contract, not accident."""
+    pytest.importorskip("carrot.avatar")
+    from carrot.avatar import AVATAR_UNAVAILABLE_MSG
+    assert AVATAR_UNAVAILABLE_MSG == "(avatar unavailable: no display)"
