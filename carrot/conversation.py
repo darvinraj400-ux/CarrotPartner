@@ -15,6 +15,11 @@ class Turn:
 
 
 class ConversationBuffer:
+    # Episodic Continuity (research tier) must never persist turn text.
+    # Episodes store derived features only: topic tokens, timestamps,
+    # turn count, mood label. Enforced by
+    # test_no_verbatim_turn_text_in_new_stores (field-name) and
+    # test_episode_store_never_contains_turn_text (runtime, Phase 2+).
     def __init__(self, capacity: int = 10):
         self._turns: deque = deque(maxlen=max(1, int(capacity)))
 

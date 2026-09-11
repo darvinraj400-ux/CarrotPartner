@@ -991,6 +991,7 @@ _ALLOWED_JSON_BASENAMES = frozenset({
     # new persistent store; any future addition needs a planner-approved diff.
     "relationship.json",
     "social.json",   # Slice 15: config/social.json (committed, handles only)
+    "episodes.json",   # state/episodes.json (per-companion) + config/episodes.json (global)
 })
 
 
@@ -1702,3 +1703,40 @@ def test_default_companion_uses_flat_paths():
             root / "state" / "ada" / "state.json"
         assert named["permissions_json"] == \
             root / "state" / "permissions.json"
+
+
+# --- Episodic Continuity Phase 0: raw-turn persistence pin ---
+
+
+def test_no_verbatim_turn_text_in_new_stores():
+    # Research tier boundary: a persistent episode record must never
+    # carry verbatim conversation text. Episodes store derived features
+    # only (topic tokens, timestamps, turn count, mood label). If a
+    # future Episode class gains a text-shaped field, this pin fails
+    # loudly with the offending name.
+    path = ROOT / "carrot" / "episodes.py"
+    if not path.exists():
+        pytest.skip("episodes.py lands in Phase 1")
+    forbidden = {
+        "text", "user_text", "reply", "message", "content",
+        "transcript", "history", "turns", "conversation",
+        "conversation_text", "user_message", "assistant_message",
+    }
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "Episode":
+            for stmt in node.body:
+                if isinstance(stmt, ast.AnnAssign) and isinstance(
+                        stmt.target, ast.Name):
+                    names = [stmt.target.id]
+                elif isinstance(stmt, ast.Assign):
+                    names = [t.id for t in stmt.targets
+                             if isinstance(t, ast.Name)]
+                else:
+                    continue
+                for name in names:
+                    if name in forbidden:
+                        offenders.append(name)
+    assert not offenders, \
+        f"Episode declares verbatim-turn field(s): {sorted(set(offenders))}"
