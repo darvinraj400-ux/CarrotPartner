@@ -56,6 +56,7 @@ def companion_paths(root: Path, name: str) -> dict:
         "initiative_json": state / "initiative.json",
         "social_dir": state / "social",
         "channel_dir": state / "channel",
+        "episodes_json": state / "episodes.json",
         "personality_json": r / "config" / "companions" / f"{name}.json",
         "companion_config_dir": r / "config" / "companions",
     })

@@ -290,7 +290,7 @@ def _stage_build_root(tmp_path):
     (tmp_path / "config").mkdir(exist_ok=True)
     (tmp_path / "state").mkdir(exist_ok=True)
     for name in ("personality.json", "appraisal.json", "behavior.json",
-                 "decay.json", "environment.json"):
+                 "decay.json", "environment.json", "episodes.json"):
         shutil.copy(ROOT / "config" / name, tmp_path / "config" / name)
 
 
@@ -617,8 +617,8 @@ def test_companion_paths_disjoint_for_two_names(tmp_path):
     named = companion_paths(tmp_path, "ada")
     per_companion = {"state_dir", "state_json", "memories_json",
                      "drives_json", "relationship_json", "initiative_json",
-                     "social_dir", "channel_dir", "personality_json",
-                     "companion_config_dir"}
+                     "episodes_json", "social_dir", "channel_dir",
+                     "personality_json", "companion_config_dir"}
     for key in per_companion:
         # companion_config_dir exists only for named companions (the
         # default's config root is config_dir itself) — absence there

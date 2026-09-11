@@ -22,6 +22,7 @@ from carrot.relationship import RelationshipStore
 from carrot.permissions import PermissionStore
 from carrot.drives import DriveStore, DrivesConfig
 from carrot.environment import EnvironmentConfig
+from carrot.episodes import EpisodeStore
 from carrot.personality import Personality
 from tests.conftest import ROOT
 from tests.test_classifier import StubSemanticClassifier
@@ -43,7 +44,8 @@ class FakeTime:
 
 def make_carrot(personality=None, start=None, memory_store=None,
                 drive_store=None, permission_store=None,
-                initiative_store=None, relationship_store=None):
+                initiative_store=None, relationship_store=None,
+                episode_store=None):
     clock = start or FakeTime()
     llm = MockLLM()
     if memory_store is None:
@@ -79,6 +81,13 @@ def make_carrot(personality=None, start=None, memory_store=None,
                                                time_fn=clock)
     else:
         reldir = None
+    if episode_store is None:
+        epdir = tempfile.TemporaryDirectory(prefix="carrot-test-epi-")
+        episode_store = EpisodeStore(Path(epdir.name)
+                                     / "episodes.json",
+                                     time_fn=clock)
+    else:
+        epdir = None
     carrot = Carrot(
         state=EmotionState(),
         personality=personality or Personality.load(
@@ -104,6 +113,7 @@ def make_carrot(personality=None, start=None, memory_store=None,
             str(ROOT / "config" / "initiative.json")),
         initiative_store=initiative_store,
         relationship_store=relationship_store,
+        episode_store=episode_store,
         time_fn=clock,
     )
     llm._behavior_getter = lambda: carrot.last_behavior
@@ -113,6 +123,7 @@ def make_carrot(personality=None, start=None, memory_store=None,
     carrot._tmp_permdir = permdir
     carrot._tmp_initdir = initdir
     carrot._tmp_reldir = reldir
+    carrot._tmp_epdir = epdir
     return carrot
 
 
@@ -127,6 +138,7 @@ def make_companion(
     permission_store=None,
     initiative_store=None,
     relationship_store=None,
+    episode_store=None,
 ):
     """Isolated Carrot for a named companion under a tmp root.
 
@@ -165,6 +177,9 @@ def make_companion(
                           if relationship_store is not None
                           else RelationshipStore(
                               paths["relationship_json"], time_fn=clock))
+    episode_store = (episode_store if episode_store is not None
+                     else EpisodeStore(paths["episodes_json"],
+                                       time_fn=clock))
     carrot = Carrot(
         state=EmotionState(),
         personality=personality,
@@ -186,6 +201,7 @@ def make_companion(
             str(ROOT / "config" / "initiative.json")),
         initiative_store=initiative_store,
         relationship_store=relationship_store,
+        episode_store=episode_store,
         time_fn=clock,
         companion=name,
     )

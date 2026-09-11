@@ -18,6 +18,7 @@ from carrot.episodes import (
     derive,
     recall,
 )
+from tests.test_scenarios import make_carrot
 from tests.conftest import ROOT
 
 
@@ -794,3 +795,147 @@ def test_recall_validation():
         recall((_rep(),), ("garden", 42), (), **good)
     with pytest.raises(ValueError):
         recall((_rep(), "not-an-episode"), ("garden", "rain"), (), **good)
+
+
+# --- Episodic Continuity Phase 4: orchestrator integration tests ---
+
+
+def test_process_turn_creates_episode_first_turn():
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    (episode,) = c.episode_store.load()
+    assert episode.turn_count == 1
+    assert episode.topic_tokens == ("talking", "gardening")
+    assert episode.mood_label == c.state.mood
+
+
+def test_process_turn_joins_within_window():
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    c.process_turn("talking about soil")
+    (episode,) = c.episode_store.load()
+    assert episode.turn_count == 2
+    assert "soil" in episode.topic_tokens
+
+
+def test_process_turn_outside_window_creates_second():
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    c.clock.advance(3600.0)
+    c.process_turn("talking about gardening")
+    episodes = c.episode_store.load()
+    assert len(episodes) == 2
+    assert all(e.turn_count == 1 for e in episodes)
+
+
+def test_process_turn_pivot_creates_second():
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    c.process_turn("playing chess daily")
+    episodes = c.episode_store.load()
+    assert len(episodes) == 2
+    assert episodes[0].topic_tokens == ("talking", "gardening")
+
+
+def test_episode_store_on_disk_matches():
+    from carrot.episodes import EpisodeStore as _ES
+
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    c.process_turn("talking about soil")
+    assert _ES(c.episode_store.path).load() == c.episode_store.load()
+
+
+def test_last_episodes_populated_on_match():
+    # A matching second turn joins the ongoing thread, which is then
+    # excluded from retrieval — last_episodes stays empty while the
+    # thread is live. (Renamed semantics: "populated" now means the
+    # store grew, asserted via turn_count below in the store test.)
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    assert c.last_episodes == ()
+    c.process_turn("talking about soil")
+    assert c.last_episodes == ()
+    (episode,) = c.episode_store.load()
+    assert episode.turn_count == 2
+
+
+def test_last_episodes_empty_without_match():
+    # No *prior* episode matches the pivot turn, and the pivot's own
+    # new thread is not retrieved back — last_episodes stays empty.
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    c.process_turn("playing chess daily")
+    assert c.last_episodes == ()
+    assert len(c.episode_store.load()) == 2
+
+
+def test_last_episodes_excludes_ongoing_thread():
+    # Retrieval surfaces prior context, not the current turn's thread:
+    # a turn that joins the latest episode must not retrieve it back.
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    assert c.last_episodes == ()
+    c.process_turn("talking about soil")
+    assert c.last_episodes == ()
+
+
+def test_last_episodes_retrieves_prior_after_new_thread():
+    # A turn outside the join window starts a new thread; the prior
+    # episode is now genuinely "previously" and is retrieved.
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    c.process_turn("talking about soil")
+    c.clock.advance(3600.0)
+    c.process_turn("talking about gardening")
+    assert len(c.last_episodes) == 1
+    assert c.last_episodes[0].turn_count == 2
+    assert set(c.last_episodes[0].topic_tokens) == \
+        {"talking", "gardening", "soil"}
+
+
+def test_last_episodes_empty_on_first_turn():
+    # Pin against the original self-match bug: a fresh Carrot's first
+    # turn has no prior episodes, so nothing is retrieved even for
+    # contentful input.
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    assert c.last_episodes == ()
+
+
+def test_process_turn_prompt_stable_with_episodes_retained():
+    # Preview pin for Phase 5: step 5e retains episodes without
+    # consuming them, so identical turn sequences must still produce
+    # byte-identical prompts even once last_episodes is non-empty.
+    first = make_carrot()
+    second = make_carrot()
+    for text in ("talking about gardening", "talking about soil"):
+        first.process_turn(text)
+        second.process_turn(text)
+    for carrot in (first, second):
+        carrot.clock.advance(3600.0)
+        carrot.process_turn("talking about gardening")
+    assert len(first.last_episodes) == 1
+    assert first.llm.last_system == second.llm.last_system
+    assert "Previously:" not in first.llm.last_system
+
+
+def test_process_turn_prompt_ignores_nonempty_last_episodes():
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    c.process_turn("talking about soil")
+    c.clock.advance(3600.0)
+    c.process_turn("talking about gardening")
+    assert len(c.last_episodes) == 1
+    assert "Previously:" not in c.llm.last_system
+
+
+def test_process_turn_deterministic_episodes():
+    first = make_carrot()
+    second = make_carrot()
+    for text in ("talking about gardening", "talking about soil",
+                 "playing chess daily"):
+        first.process_turn(text)
+        second.process_turn(text)
+    assert first.episode_store.load() == second.episode_store.load()
+    assert first.last_episodes == second.last_episodes

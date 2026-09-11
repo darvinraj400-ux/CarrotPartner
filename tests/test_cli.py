@@ -366,7 +366,7 @@ def _staged_root(tmp_path, monkeypatch):
     (tmp_path / "config").mkdir(exist_ok=True)
     (tmp_path / "state").mkdir(exist_ok=True)
     for name in ("personality.json", "appraisal.json", "behavior.json",
-                 "decay.json", "environment.json"):
+                 "decay.json", "environment.json", "episodes.json"):
         shutil.copy(ROOT / "config" / name, tmp_path / "config" / name)
     monkeypatch.setattr("carrot.cli.ROOT", tmp_path)
     return tmp_path

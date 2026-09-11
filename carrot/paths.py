@@ -40,4 +40,6 @@ def _paths(root: Path) -> dict:
         "initiative_config_json": config / "initiative.json",
         "relationship_config_json": config / "relationship.json",
         "social_config_json": config / "social.json",
+        "episodes_json": state / "episodes.json",
+        "episodes_config_json": config / "episodes.json",
     }

@@ -371,6 +371,7 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None,
     from .llm import MockLLM, make_provider
     from .personality import Personality
     from .state_store import StateStore
+    from .episodes import EpisodeStore, EpisodesConfig
 
     paths = companion_paths(ROOT, companion)
     store = StateStore(str(paths["state_json"]))
@@ -385,6 +386,9 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None,
     personality = Personality.load(str(paths["personality_json"]))
     environment_config = EnvironmentConfig.load(
         str(paths["environment_json"]))
+    episodes_config = EpisodesConfig.load(
+        str(paths["episodes_config_json"]))
+    episode_store = EpisodeStore(paths["episodes_json"])
     if environment_probe is None:
         if sys.platform == "win32":
             from .environment_win32 import WindowsEnvironmentProbe
@@ -404,6 +408,8 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None,
         buffer=ConversationBuffer(),
         environment_probe=environment_probe,
         environment_config=environment_config,
+        episode_store=episode_store,
+        episodes_config=episodes_config,
         companion=companion,
     )
     if isinstance(carrot.llm, MockLLM) and carrot.llm._behavior_getter is None:

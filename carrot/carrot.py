@@ -14,7 +14,7 @@ from pathlib import Path
 from . import mood as mood_mod
 from .behavior import Behavior
 from .classifier import InteractionEvent, _INSULT_CUES, _REPAIR_CUES
-from .context import ConversationContext, derive_context
+from .context import ConversationContext, derive_context, tokenize
 from .drives import (
     DrivesConfig,
     DriveStore,
@@ -31,6 +31,7 @@ from .environment import (
     map_observation,
 )
 from .companion import DEFAULT_COMPANION
+from .episodes import Episode, EpisodeStore, EpisodesConfig, derive, recall
 from .initiative import InitiativeConfig, InitiativeStore
 from .memory import DeterministicExtractor, Memory, MemoryStore
 from .permissions import PermissionState, PermissionStore
@@ -96,6 +97,10 @@ _DEFAULT_RELATIONSHIP_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "relationship.json")
 _DEFAULT_RELATIONSHIP_STORE_PATH = (
     Path(__file__).resolve().parents[1] / "state" / "relationship.json")
+_DEFAULT_EPISODES_STORE_PATH = (
+    Path(__file__).resolve().parents[1] / "state" / "episodes.json")
+_DEFAULT_EPISODES_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "episodes.json")
 
 
 def _has_cue(lowered_text: str, cues) -> bool:
@@ -170,6 +175,7 @@ class Carrot:
                  tools_config=None, permission_store=None,
                  initiative_config=None, initiative_store=None,
                  relationship_config=None, relationship_store=None,
+                 episode_store=None, episodes_config=None,
                  time_fn=None, companion: str = DEFAULT_COMPANION):
         self.state = state
         self.personality = personality
@@ -234,6 +240,15 @@ class Carrot:
         self.last_relationship: RelationshipState = \
             self.relationship_store.load()
         self.last_relationship_band: str | None = None
+        if episodes_config is None:
+            # Config is required: a missing file is a hard error here.
+            episodes_config = EpisodesConfig.load(
+                _DEFAULT_EPISODES_CONFIG_PATH)
+        self.episodes_config = episodes_config
+        if episode_store is None:
+            episode_store = EpisodeStore(_DEFAULT_EPISODES_STORE_PATH)
+        self.episode_store = episode_store
+        self.last_episodes: tuple[Episode, ...] = ()
         self.last_behavior: Behavior = Behavior("normal", "low")
         self.last_event: InteractionEvent | None = None
         self.last_context = None
@@ -390,6 +405,45 @@ class Carrot:
 
         # 5d. Per-turn drive pull, computed once for Phase 4/5 consumers.
         self.last_drive_pull = drive_pull(drives, self.drives_config)
+
+        # 5e. Episodic memory: derive (join-or-create) and retrieve
+        # prior context.
+        turn_tokens = tokenize(str(text))
+        episodes_before = self.episode_store.load()
+        episodes_after = derive(
+            episodes_before,
+            turn_tokens,
+            now,
+            mood_label=self.state.mood,
+            config=self.episodes_config,
+            last_behavior=(self.last_behavior.name
+                           if self.last_behavior else None),
+        )
+        if episodes_after != episodes_before:
+            self.episode_store.save(episodes_after)
+
+        # Retrieval surfaces prior context, not the current turn's
+        # thread. If the turn joined the latest episode, that episode
+        # is the ongoing thread and is already covered by the
+        # conversation buffer; it is not "Previously:" content.
+        # Identify the joined index by element-wise comparison — the
+        # joined episode differs from its before counterpart; all
+        # others are equal.
+        candidates = episodes_before
+        if episodes_before and len(episodes_after) == len(episodes_before):
+            for i, (b, a) in enumerate(zip(episodes_before,
+                                           episodes_after)):
+                if a != b:
+                    candidates = (episodes_before[:i]
+                                  + episodes_before[i + 1:])
+                    break
+
+        self.last_episodes = recall(
+            candidates,
+            turn_tokens,
+            ctx.recent_topics,
+            config=self.episodes_config,
+        )
 
         # 6. LLM renders wording, with at most one tool round-trip.
         # The second reply (if any) is final and never parsed for tools.
