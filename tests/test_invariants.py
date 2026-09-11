@@ -2100,7 +2100,10 @@ def test_voice_block_still_skeleton_clean():
 
 
 def test_voice_block_length_bounded():
-    assert len(_VOICE_BLOCK) <= 1600
+    # Phase 5 amendment: 1400 is a hard design ceiling agreed by both
+    # planners to prevent prompt creep — not an arbitrary number. Any
+    # growth past it fails here by design.
+    assert len(_VOICE_BLOCK) <= 1400
 
 
 def test_sketch_contains_carriage_sentence():
@@ -2128,3 +2131,7 @@ def test_carriage_sentence_static():
         "more with less."
     assert first.endswith(tail)
     assert second.endswith(tail)
+
+
+def test_voice_block_no_forced_question_present():
+    assert "keep the conversation moving" in _VOICE_BLOCK
