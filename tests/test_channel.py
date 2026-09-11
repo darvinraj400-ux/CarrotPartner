@@ -10,6 +10,8 @@ from carrot.channel import (
     MockChannel,
     _FILENAME_RE,
 )
+from carrot.cli import drain_inbox
+from tests.test_scenarios import make_carrot
 
 
 # ---- constants ----
@@ -253,3 +255,92 @@ def test_file_channel_deterministic(tmp_path):
     out_second = sorted(p.read_bytes() for p in second.outbox.glob("*.msg"))
     assert out_first == out_second
     assert re.search(r"\d", first.receive()) is None
+
+
+# --- Slice 14 Phase 2: drain_inbox tests ---
+
+
+def _store_carrot(tmp_path, name="state.json"):
+    from carrot.state_store import StateStore
+
+    c = make_carrot()
+    c.store = StateStore(str(tmp_path / name))
+    return c
+
+
+def test_drain_empty_channel():
+    c = make_carrot()
+    assert drain_inbox(c, MockChannel([])) == 0
+    assert len(c.buffer) == 0
+
+
+def test_drain_single_message(tmp_path):
+    c = _store_carrot(tmp_path)
+    assert drain_inbox(c, MockChannel(["hello"])) == 1
+    texts = [t.text for t in c.buffer.recent()]
+    assert "hello" in texts
+    assert len(texts) == 2  # user turn + carrot reply
+
+
+def test_drain_reply_sent(tmp_path):
+    c = _store_carrot(tmp_path)
+    chan = MockChannel(["hello"])
+    assert drain_inbox(c, chan) == 1
+    assert len(chan.sent) == 1
+    assert isinstance(chan.sent[0], str) and chan.sent[0]
+
+
+def test_drain_multiple_in_order(tmp_path):
+    c = _store_carrot(tmp_path)
+    assert drain_inbox(c, MockChannel(["a", "b", "c"])) == 3
+    roles = [t.role for t in c.buffer.recent(6)]
+    assert roles == ["user", "carrot"] * 3
+
+
+def test_drain_bounded_at_max(tmp_path):
+    c = _store_carrot(tmp_path)
+    chan = MockChannel(["x"] * 150)
+    assert drain_inbox(c, chan, max_messages=5) == 5
+    assert len(c.buffer.recent(100)) == 10
+
+
+def test_drain_whitespace_stops():
+    c = make_carrot()
+    assert drain_inbox(c, MockChannel([" "])) == 0
+    assert len(c.buffer) == 0
+
+
+def test_drain_whitespace_after_valid_stops(tmp_path):
+    c = _store_carrot(tmp_path)
+    assert drain_inbox(c, MockChannel(["a", " ", "b"])) == 1
+    texts = [t.text for t in c.buffer.recent()]
+    assert "b" not in texts
+
+
+def test_drain_send_failure_swallowed(tmp_path):
+    class LoudChannel(MockChannel):
+        def send(self, text):
+            raise RuntimeError("outbox unwritable")
+
+    c = _store_carrot(tmp_path)
+    assert drain_inbox(c, LoudChannel(["hello"])) == 1
+    assert len(c.buffer.recent()) == 2
+
+
+def test_drain_saves_state_per_turn(tmp_path):
+    path = tmp_path / "state.json"
+    c = _store_carrot(tmp_path)
+    assert not path.exists()
+    assert drain_inbox(c, MockChannel(["hello"])) == 1
+    assert path.exists()
+
+
+def test_drain_deterministic(tmp_path):
+    first = _store_carrot(tmp_path, "a.json")
+    second = _store_carrot(tmp_path, "b.json")
+    one = drain_inbox(first, MockChannel(["hello", "how are you"]))
+    two = drain_inbox(second, MockChannel(["hello", "how are you"]))
+    assert one == two == 2
+    assert first.state.to_dict() == second.state.to_dict()
+    assert [t.text for t in first.buffer.recent()] == \
+        [t.text for t in second.buffer.recent()]

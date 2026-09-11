@@ -7,6 +7,12 @@ import time
 from pathlib import Path
 
 from .avatar import launch_avatar
+from .channel import (
+    CHANNEL_EMPTY_MSG,
+    Channel,
+    FileChannel,
+    MAX_DRAIN,
+)
 from .drives import drive_pull, update_rise
 from .environment import MockEnvironmentProbe
 from .initiative import ACTIVE_REASONS, should_initiate
@@ -35,7 +41,8 @@ HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "  /initiative show initiative decision\n"
              "  /relationship show relationship\n"
              "  /avatar open the desktop avatar (closes on window exit)\n"
-             "  /voice one voice turn (mock recognizer/synth)")
+             "  /voice one voice turn (mock recognizer/synth)\n"
+             "  /drain process queued channel messages")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
@@ -378,6 +385,17 @@ def _parse_away_args(argv) -> tuple[bool, int]:
     return True, max(1, min(10, number))
 
 
+def _parse_drain_args(argv: list[str]) -> tuple[bool, str | None]:
+    """Returns (has_flag, dir_or_None). None means flag absent or arg missing."""
+    args = list(argv or [])
+    if "--drain" not in args:
+        return (False, None)
+    idx = args.index("--drain")
+    if idx + 1 >= len(args):
+        return (True, None)
+    return (True, args[idx + 1])
+
+
 def _run_away_mode(carrot, max_n: int) -> None:
     """Bounded initiative actuation. Never calls process_turn, never writes
     to the conversation buffer. Each iteration loads drives read-only,
@@ -436,6 +454,36 @@ def run_voice_turn(
     return (transcript, reply)
 
 
+def drain_inbox(
+    carrot,
+    channel: Channel,
+    max_messages: int = MAX_DRAIN,
+) -> int:
+    """Bounded drain: consume up to max_messages messages from channel,
+    running one process_turn per non-empty message.
+
+    For each message:  process_turn(text) -> channel.send(reply)
+                       -> save carrot state.
+    Stops early on empty receive (channel exhausted).
+    Never loops unbounded: `while processed < max_messages:`.
+    Never raises on send failure (transport must not break a turn).
+    Returns count processed.
+    """
+    processed = 0
+    while processed < max_messages:
+        text = channel.receive()
+        if not text or not str(text).strip():
+            break
+        reply = carrot.process_turn(str(text))
+        try:
+            channel.send(reply)
+        except Exception:
+            pass  # transport failure must not break a turn
+        carrot.store.save(carrot.state)
+        processed += 1
+    return processed
+
+
 def main(argv=None) -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -444,9 +492,24 @@ def main(argv=None) -> None:
         pass
     args = list(sys.argv[1:] if argv is None else argv)
     away, max_n = _parse_away_args(args)
+    has_drain, drain_dir = _parse_drain_args(args)
+    if away and has_drain:
+        print("usage: --away [N] | --drain <dir>")
+        return
     carrot = build_carrot()
     if away:
         _run_away_mode(carrot, max_n)
+        return
+    if has_drain:
+        if drain_dir is None:
+            print("usage: --drain <dir>")
+            return
+        channel = FileChannel(Path(drain_dir))
+        count = drain_inbox(carrot, channel)
+        if count == 0:
+            print(CHANNEL_EMPTY_MSG)
+        else:
+            print(f"drained: {count}")
         return
     print("Carrot (slice 1) -- type /quit to exit, /dbg for inner state.")
     while True:
@@ -495,6 +558,14 @@ def main(argv=None) -> None:
                 print(f"heard: {transcript}")
                 print(f"carrot: {reply}")
             carrot.store.save(carrot.state)
+            continue
+        if line.strip() == "/drain":
+            channel = FileChannel(ROOT / "state" / "channel")
+            count = drain_inbox(carrot, channel)
+            if count == 0:
+                print(CHANNEL_EMPTY_MSG)
+            else:
+                print(f"drained: {count}")
             continue
         if line.strip() == "/initiative":
             print(format_initiative(carrot))

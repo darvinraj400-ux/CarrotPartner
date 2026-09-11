@@ -38,6 +38,7 @@ from carrot.context import derive_context
 from carrot.avatar import AVATAR_UNAVAILABLE_MSG
 from carrot.state_store import StateStore
 from carrot.voice import VOICE_EMPTY_MSG
+from carrot.channel import CHANNEL_EMPTY_MSG, FileChannel
 from carrot.drives import DriveState, DriveStore, DrivesConfig
 from carrot.tools import ToolsConfig, ToolRequest, decide
 from carrot.permissions import PermissionStore
@@ -1439,3 +1440,102 @@ def test_voice_dispatch_empty_touches_no_llm(monkeypatch, tmp_path):
 
 def test_help_lists_voice():
     assert "/voice" in HELP_TEXT
+
+
+# --- Slice 14 Phase 2: /drain + --drain tests ---
+
+
+def _drain_carrot(tmp_path, name="state.json"):
+    c = make_carrot()
+    c.store = StateStore(str(tmp_path / name))
+    return c
+
+
+def _queue_msg(base, seq, text):
+    inbox = base / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / f"{seq:06d}-aabbccdd.msg").write_text(text, encoding="utf-8")
+
+
+def test_drain_dispatch_empty(monkeypatch, capsys, tmp_path):
+    base = tmp_path / "ch"
+    monkeypatch.setattr("carrot.cli.FileChannel", lambda p: FileChannel(base))
+    c = _drain_carrot(tmp_path)
+    _run_main_scripted(monkeypatch, ["/drain"], factory=lambda: c)
+    assert CHANNEL_EMPTY_MSG in capsys.readouterr().out
+
+
+def test_drain_dispatch_queued(monkeypatch, capsys, tmp_path):
+    base = tmp_path / "ch"
+    _queue_msg(base, 1, "hello there")
+    monkeypatch.setattr("carrot.cli.FileChannel", lambda p: FileChannel(base))
+    c = _drain_carrot(tmp_path)
+    _run_main_scripted(monkeypatch, ["/drain"], factory=lambda: c)
+    out = capsys.readouterr().out
+    assert "drained: 1" in out
+    assert len(list((base / "outbox").glob("*.msg"))) == 1
+    assert len(list((base / "inbox" / "done").glob("*.msg"))) == 1
+
+
+def test_drain_dispatch_no_window_or_audio(monkeypatch, tmp_path):
+    base = tmp_path / "ch"
+    monkeypatch.setattr("carrot.cli.FileChannel", lambda p: FileChannel(base))
+    _run_main_scripted(monkeypatch, ["/drain"])
+    assert "tkinter" not in sys.modules
+
+
+def test_drain_dispatch_saves_state(monkeypatch, tmp_path):
+    base = tmp_path / "ch"
+    _queue_msg(base, 1, "hello")
+    monkeypatch.setattr("carrot.cli.FileChannel", lambda p: FileChannel(base))
+    path = tmp_path / "state.json"
+    c = _drain_carrot(tmp_path)
+    assert not path.exists()
+    _run_main_scripted(monkeypatch, ["/drain"], factory=lambda: c)
+    assert path.exists()
+
+
+def test_parse_drain_args():
+    from carrot.cli import _parse_drain_args
+
+    assert _parse_drain_args([]) == (False, None)
+    assert _parse_drain_args(["--away"]) == (False, None)
+    assert _parse_drain_args(["--drain", "some/dir"]) == (True, "some/dir")
+    assert _parse_drain_args(["--drain"]) == (True, None)
+
+
+def test_away_and_drain_mutually_exclusive(monkeypatch, capsys, tmp_path):
+    called = []
+    monkeypatch.setattr("carrot.cli.build_carrot",
+                        lambda: called.append(1) or make_carrot())
+    from carrot.cli import main
+
+    main(["--away", "--drain", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "usage: --away [N] | --drain <dir>" in out
+    assert called == []
+
+
+def test_drain_flag_missing_arg(monkeypatch, capsys):
+    monkeypatch.setattr("carrot.cli.build_carrot", lambda: make_carrot())
+    from carrot.cli import main
+
+    main(["--drain"])
+    assert "usage: --drain <dir>" in capsys.readouterr().out
+
+
+def test_drain_flag_real_inbox(monkeypatch, capsys, tmp_path):
+    base = tmp_path / "ch"
+    _queue_msg(base, 1, "hello there")
+    c = _drain_carrot(tmp_path)
+    monkeypatch.setattr("carrot.cli.build_carrot", lambda: c)
+    from carrot.cli import main
+
+    main(["--drain", str(base)])
+    out = capsys.readouterr().out
+    assert "drained: 1" in out
+    assert len(list((base / "outbox").glob("*.msg"))) == 1
+
+
+def test_help_lists_drain():
+    assert "/drain" in HELP_TEXT
