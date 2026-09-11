@@ -1930,6 +1930,45 @@ def test_voice_block_skeleton_clean():
         assert re.search(rf"\b{word}\b", lowered) is None, word
 
 
+def test_voice_layer_full_assembly_skeleton_clean():
+    from carrot.environment import MockEnvironmentProbe, RawObservation
+    from carrot.memory import Memory
+    from carrot.relationship import RelationshipState
+
+    c = make_carrot()
+    c.environment_probe = MockEnvironmentProbe(
+        [RawObservation("chrome.exe", False)])
+    c.memory_store.add(Memory(text="my cat tom naps",
+                              kind="fact", importance=0.9, created_ts=100.0,
+                              last_recalled_ts=1_000_000.0))
+    c.memory_store.add(Memory(text="my browser tabs are many",
+                              kind="fact", importance=0.5, created_ts=200.0,
+                              last_recalled_ts=1_000_000.0))
+    c.relationship_store.save(RelationshipState(
+        trust=0.5, closeness=0.75, updated_ts={}))
+    c.last_relationship = c.relationship_store.load()
+    c.process_turn("my dog rex is funny lol")
+    c.process_turn("my dog rex is funny lol")
+    c.clock.advance(3600.0)
+    c.process_turn("you're cute, thanks! my dog rex is funny lol")
+    assert c.state.mood == "tender"
+    assert c.last_boost_effect is True
+    assert c.last_relationship_band == "high"
+    assert len(c.last_episodes) == 1
+    system = c.llm.last_system
+    assert " Previously: " in system
+    assert 'Feeling: "tender"' in system
+    skeleton = _skeleton(system)
+    assert re.search(r"\d", skeleton) is None
+    lowered = skeleton.lower()
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
 # --- Voice Layer Phase 2: mood threading ---
 
 
