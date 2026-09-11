@@ -143,7 +143,7 @@ def test_recall_and_refresh_updates_recalled_ts(tmp_path):
     store = MemoryStore(tmp_path / "memories.json")
     store.save([_mem("my dog is funny", importance=0.8,
                      recalled=now - 1000.0)])
-    hits = store.recall_and_refresh("dog", (), now)
+    hits, _ = store.recall_and_refresh("dog", (), now)
     assert [m.last_recalled_ts for m in hits] == [now]
     assert [m.last_recalled_ts for m in store.load()] == [now]
 
@@ -155,10 +155,10 @@ def test_recall_and_refresh_idempotent_same_now(tmp_path):
                      recalled=now - 1000.0),
                 _mem("I love ramen", importance=0.9,
                      recalled=now - 1000.0)])
-    first = store.recall_and_refresh("dog", (), now)
+    first, _ = store.recall_and_refresh("dog", (), now)
     assert len(first) == 2  # both survive: guards against vacuous pass
     after_first = [m.to_dict() for m in store.load()]
-    second = store.recall_and_refresh("dog", (), now)
+    second, _ = store.recall_and_refresh("dog", (), now)
     assert [m.to_dict() for m in second] == [m.to_dict() for m in first]
     assert [m.to_dict() for m in store.load()] == after_first
 
@@ -301,8 +301,8 @@ def test_recall_and_refresh_forwards_boost(tmp_path):
     mems = [_mem("i love games", created=200.0),
             _mem("i love pizza", created=100.0)]
     store.save(mems)
-    got = store.recall_and_refresh("hello there", (), 1000.0,
-                                   boost_text="games")
+    got, _ = store.recall_and_refresh("hello there", (), 1000.0,
+                                      boost_text="games")
     expected = recall(mems, "hello there", (), boost_text="games")
     assert [m.text for m in got] == [m.text for m in expected]
 
@@ -314,10 +314,10 @@ def test_recall_and_refresh_default_preserves_behavior(tmp_path):
             _mem("i love pizza", created=100.0)]
     store.save(mems)
     assert [m.text for m in
-            store.recall_and_refresh("hello there", (), 1000.0)] == \
+            store.recall_and_refresh("hello there", (), 1000.0)[0]] == \
         [m.text for m in
          store.recall_and_refresh("hello there", (), 1000.0,
-                                  boost_text="")]
+                                  boost_text="")[0]]
 
 
 def test_boost_text_is_keyword_only():
@@ -328,3 +328,66 @@ def test_boost_text_is_keyword_only():
         pass
     else:
         raise AssertionError("positional boost_text did not raise")
+
+
+# --- Slice 10 Phase 2: recall_and_refresh pair tests ---
+
+
+def test_recall_and_refresh_returns_pair(tmp_path):
+    store = MemoryStore(tmp_path / "memories.json")
+    store.save([_mem("i love games", created=100.0)])
+    pair = store.recall_and_refresh("hello there", (), 1000.0)
+    assert isinstance(pair, tuple) and len(pair) == 2
+    hits, changed = pair
+    assert isinstance(hits, tuple)
+    assert all(isinstance(m, Memory) for m in hits)
+    assert isinstance(changed, bool)
+
+
+def test_recall_and_refresh_empty_boost_never_changed(tmp_path):
+    store = MemoryStore(tmp_path / "memories.json")
+    store.save([_mem("my browser tabs", created=100.0),
+                _mem("i love pizza", created=200.0)])
+    _, changed = store.recall_and_refresh("hello there", (), 1000.0,
+                                          boost_text="")
+    assert changed is False
+
+
+def test_recall_and_refresh_boost_reorders_topk(tmp_path):
+    store = MemoryStore(tmp_path / "memories.json")
+    store.save([_mem("i love pizza", created=100.0),
+                _mem("my browser tabs", created=200.0)])
+    hits, changed = store.recall_and_refresh("hello there", (), 1000.0,
+                                             boost_text="browser")
+    assert changed is True
+    assert [m.text for m in hits] == ["my browser tabs", "i love pizza"]
+
+
+def test_recall_and_refresh_boost_no_match_unchanged(tmp_path):
+    store = MemoryStore(tmp_path / "memories.json")
+    store.save([_mem("i love pizza", created=100.0),
+                _mem("my browser tabs", created=200.0)])
+    hits, changed = store.recall_and_refresh("hello there", (), 1000.0,
+                                             boost_text="zebra")
+    assert changed is False
+    assert [m.text for m in hits] == ["i love pizza", "my browser tabs"]
+
+
+def test_recall_and_refresh_refreshes_only_boosted(tmp_path):
+    now = 2000000000.0
+    store = MemoryStore(tmp_path / "memories.json")
+    store.save([_mem("i love pizza", created=100.0,
+                      recalled=now - 1000.0),
+                _mem("my browser tabs", created=200.0,
+                      recalled=now - 1000.0),
+                _mem("i love ramen", created=300.0,
+                      recalled=now - 1000.0)])
+    hits, changed = store.recall_and_refresh("hello there", (), now, k=1,
+                                             boost_text="browser")
+    assert changed is True
+    assert [m.text for m in hits] == ["my browser tabs"]
+    assert [m.last_recalled_ts for m in hits] == [now]
+    by_text = {m.text: m for m in store.load()}
+    assert by_text["my browser tabs"].last_recalled_ts == now
+    assert by_text["i love pizza"].last_recalled_ts == now - 1000.0
+    assert by_text["i love ramen"].last_recalled_ts == now - 1000.0

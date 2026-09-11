@@ -13,7 +13,9 @@ from carrot.classifier import DeterministicClassifier
 from carrot.conversation import ConversationBuffer
 from carrot.emotions import EmotionState
 from carrot.llm import MockLLM
-from carrot.memory import MemoryStore
+from carrot.memory import Memory, MemoryStore
+from carrot.environment import (EnvironmentConfig, MockEnvironmentProbe,
+                                RawObservation)
 from carrot.initiative import InitiativeConfig, InitiativeStore
 from carrot.permissions import PermissionStore
 from carrot.drives import DriveStore, DrivesConfig
@@ -266,3 +268,80 @@ def test_pending_filler_excluded_end_to_end():
     # "yeah?" is filler, not a question: answering it is not curiosity.
     c.process_turn("noted.")
     assert c.last_behavior.name == "normal"
+
+
+# --- Slice 10 Phase 2: step 5b boost wiring tests ---
+
+
+def _seed_boost_memories(c):
+    # last_recalled_ts == clock start: zero elapsed, no decay skew.
+    for text, created in (("i love pizza", 100.0),
+                          ("my browser tabs are many", 200.0)):
+        c.memory_store.add(Memory(text=text, kind="fact", importance=0.5,
+                                  created_ts=created,
+                                  last_recalled_ts=1_000_000.0))
+
+
+def _browser_carrot():
+    c = make_carrot()
+    c.environment_probe = MockEnvironmentProbe(
+        [RawObservation("chrome.exe", False)])
+    _seed_boost_memories(c)
+    return c
+
+
+def test_last_recalled_populated_after_turn():
+    c = _browser_carrot()
+    c.process_turn("hello there")
+    assert [m.text for m in c.last_recalled] == \
+        ["my browser tabs are many", "i love pizza"]
+    assert [m.last_recalled_ts for m in c.last_recalled] == \
+        [c.clock(), c.clock()]
+
+
+def test_last_boost_effect_default_false():
+    c = make_carrot()
+    assert c.last_boost_effect is False
+    assert c.last_recalled == ()
+
+
+def test_last_boost_effect_true_when_app_noun_matches():
+    c = _browser_carrot()
+    c.process_turn("hello there")
+    assert c.last_boost_effect is True
+
+
+def test_last_boost_effect_false_when_env_empty():
+    c = make_carrot()
+    c.environment_probe = MockEnvironmentProbe([])
+    _seed_boost_memories(c)
+    c.process_turn("hello there")
+    assert c.last_boost_effect is False
+    # Unboosted tie broken by created_ts.
+    assert [m.text for m in c.last_recalled] == \
+        ["i love pizza", "my browser tabs are many"]
+
+
+def test_boost_wiring_deterministic():
+    first = _browser_carrot()
+    second = _browser_carrot()
+    first.process_turn("hello there")
+    second.process_turn("hello there")
+    assert [m.text for m in first.last_recalled] == \
+        [m.text for m in second.last_recalled]
+    assert first.last_boost_effect == second.last_boost_effect
+    assert first.llm.last_system == second.llm.last_system
+
+
+def test_empty_env_prompt_path_unchanged():
+    # boost_text="" -> boosted == unboosted (store-level proof), and
+    # _system_prompt is untouched in Phase 2, so the prompt path is
+    # byte-identical to Phase 1 for an empty snapshot.
+    c = make_carrot()
+    c.environment_probe = MockEnvironmentProbe([])
+    _seed_boost_memories(c)
+    c.process_turn("hello there")
+    assert c.last_boost_effect is False
+    assert [m.text for m in c.last_recalled] == \
+        ["i love pizza", "my browser tabs are many"]
+    assert "They're in the" not in c.llm.last_system

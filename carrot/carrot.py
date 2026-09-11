@@ -186,6 +186,8 @@ class Carrot:
                 _DEFAULT_ENVIRONMENT_CONFIG_PATH)
         self.environment_config = environment_config
         self.last_environment: EnvironmentSnapshot = EMPTY_SNAPSHOT
+        self.last_recalled: tuple[Memory, ...] = ()
+        self.last_boost_effect: bool = False
         if initiative_config is None:
             # Config is required: a missing file is a hard error here.
             initiative_config = InitiativeConfig.load(
@@ -311,10 +313,16 @@ class Carrot:
         self.last_behavior = behavior
 
         # 5b. Recall long-term memories (decay persisted, hits refreshed).
-        recalled = self.memory_store.recall_and_refresh(
+        # Boosted by the live environment app noun; the flag records
+        # whether the boost changed the top-k (consumed in Phase 3).
+        boost_text = self.last_environment.app_noun or ""
+        recalled, boost_effect = self.memory_store.recall_and_refresh(
             current_user_text=str(text),
             recent_topics=ctx.recent_topics,
-            now=self._now())
+            now=self._now(),
+            boost_text=boost_text)
+        self.last_recalled = recalled
+        self.last_boost_effect = boost_effect
         # 5c. Extract candidate facts from the live turn only.
         self._store_candidates(str(text))
 

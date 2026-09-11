@@ -190,22 +190,31 @@ class MemoryStore:
                            k: int = RECALL_K,
                            *,
                            boost_text: str = "") -> tuple:
-        """Decay, persist, recall top-k, refresh hits, persist, return."""
+        """Decay, persist, recall top-k twice, refresh, return pair.
+
+        Returns (boosted_recall, boost_changed_topk).
+        boost_changed_topk is True iff the boosted top-k differs from the
+        unboosted top-k (ordered tuple comparison).
+        Only memories in the boosted result have last_recalled_ts refreshed.
+        """
         now = float(now)
         decayed = decay_all(self.load(), now)
         self.save(decayed)
-        hits = recall(decayed, current_user_text, recent_topics, k=k,
-                      boost_text=boost_text)
-        if not hits:
-            return hits
+        boosted = recall(decayed, current_user_text, recent_topics, k=k,
+                         boost_text=boost_text)
+        unboosted = recall(decayed, current_user_text, recent_topics, k=k,
+                           boost_text="")
+        boost_changed = boosted != unboosted
+        if not boosted:
+            return (boosted, boost_changed)
         refreshed = [
             Memory(text=m.text, kind=m.kind, importance=m.importance,
                    created_ts=m.created_ts, last_recalled_ts=now)
-            for m in hits
+            for m in boosted
         ]
-        by_id = {id(m): r for m, r in zip(hits, refreshed)}
+        by_id = {id(m): r for m, r in zip(boosted, refreshed)}
         self.save([by_id.get(id(m), m) for m in decayed])
-        return tuple(refreshed)
+        return (tuple(refreshed), boost_changed)
 
 
 def overlap(text_a: str, text_b: str) -> int:
