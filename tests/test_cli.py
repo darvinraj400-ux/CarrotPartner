@@ -1539,3 +1539,155 @@ def test_drain_flag_real_inbox(monkeypatch, capsys, tmp_path):
 
 def test_help_lists_drain():
     assert "/drain" in HELP_TEXT
+
+
+# --- Slice 15 Phase 2: /social + --social tests ---
+
+
+def _social_cfg(inbox_dir):
+    from carrot.social import SocialConfig
+
+    return SocialConfig(platforms={"instagram": {"handle": "",
+                                                "enabled": True,
+                                                "inbox_dir": inbox_dir}})
+
+
+def test_social_dispatch_empty_config(monkeypatch, capsys):
+    class _MissingCfg:
+        @classmethod
+        def load(cls, path):
+            raise FileNotFoundError("nope")
+
+    monkeypatch.setattr("carrot.cli.SocialConfig", _MissingCfg)
+    _run_main_scripted(monkeypatch, ["/social"])
+    assert "(no social config)" in capsys.readouterr().out
+
+
+def test_social_dispatch_valid_empty(monkeypatch, capsys):
+    _run_main_scripted(monkeypatch, ["/social"])
+    assert "instagram: enabled pending=0 sent=0" in capsys.readouterr().out
+
+
+def test_social_dispatch_counts(monkeypatch, capsys, tmp_path):
+    from carrot import cli as _cli
+
+    base = tmp_path / "soc" / "ig"
+    (base / "inbox").mkdir(parents=True)
+    (base / "outbox").mkdir(parents=True)
+    (base / "inbox" / "000001-aa.msg").write_text("a", encoding="utf-8")
+    (base / "inbox" / "000002-bb.msg").write_text("b", encoding="utf-8")
+    (base / "outbox" / "000001-cc.msg").write_text("c", encoding="utf-8")
+    monkeypatch.setattr(_cli, "ROOT", tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "social.json").write_text(
+        '{"platforms": {"instagram": {"handle": "", "enabled": true, '
+        '"inbox_dir": "soc/ig"}}}', encoding="utf-8")
+    _run_main_scripted(monkeypatch, ["/social"])
+    assert "instagram: enabled pending=2 sent=1" in capsys.readouterr().out
+
+
+def test_social_dispatch_no_mutation(monkeypatch, tmp_path):
+    path = tmp_path / "state.json"
+    c = make_carrot()
+    c.store = StateStore(str(path))
+    c.store.save(c.state)
+    before = (os.stat(path).st_mtime_ns, path.read_bytes())
+    _run_main_scripted(monkeypatch, ["/social"], factory=lambda: c)
+    assert (os.stat(path).st_mtime_ns, path.read_bytes()) == before
+
+
+def test_parse_social_args():
+    from carrot.cli import _parse_social_args
+
+    assert _parse_social_args([]) == (False, None)
+    assert _parse_social_args(["--social", "instagram"]) == \
+        (True, "instagram")
+    assert _parse_social_args(["--social"]) == (True, None)
+
+
+def test_social_flag_missing_arg(monkeypatch, capsys):
+    monkeypatch.setattr("carrot.cli.build_carrot", lambda: make_carrot())
+    from carrot.cli import main
+
+    main(["--social"])
+    assert "usage: --social <platform>" in capsys.readouterr().out
+
+
+def test_social_unknown_platform(monkeypatch, capsys):
+    monkeypatch.setattr("carrot.cli.build_carrot", lambda: make_carrot())
+    from carrot.cli import main
+
+    main(["--social", "twitter"])
+    assert "unknown platform: twitter" in capsys.readouterr().out
+
+
+def test_social_flag_valid_drain(monkeypatch, capsys, tmp_path):
+    base = tmp_path / "soc" / "ig"
+    (base / "inbox").mkdir(parents=True)
+    (base / "inbox" / "000001-aa.msg").write_text("hello there",
+                                                  encoding="utf-8")
+    cfg = _social_cfg(str(base))
+
+    class _StubCfg:
+        @classmethod
+        def load(cls, path):
+            return cfg
+
+    monkeypatch.setattr("carrot.cli.SocialConfig", _StubCfg)
+    c = make_carrot()
+    c.store = StateStore(str(tmp_path / "state.json"))
+    monkeypatch.setattr("carrot.cli.build_carrot", lambda: c)
+    from carrot.cli import main
+
+    main(["--social", "instagram"])
+    out = capsys.readouterr().out
+    assert "drained: 1" in out
+    assert len(list((base / "outbox").glob("*.msg"))) == 1
+
+
+def test_social_flag_empty_inbox(monkeypatch, capsys, tmp_path):
+    base = tmp_path / "soc" / "ig"
+    (base / "inbox").mkdir(parents=True)
+    cfg = _social_cfg(str(base))
+
+    class _StubCfg:
+        @classmethod
+        def load(cls, path):
+            return cfg
+
+    monkeypatch.setattr("carrot.cli.SocialConfig", _StubCfg)
+    c = make_carrot()
+    c.store = StateStore(str(tmp_path / "state.json"))
+    monkeypatch.setattr("carrot.cli.build_carrot", lambda: c)
+    from carrot.cli import main
+
+    main(["--social", "instagram"])
+    assert CHANNEL_EMPTY_MSG in capsys.readouterr().out
+
+
+def test_social_drain_mutually_exclusive(monkeypatch, capsys, tmp_path):
+    called = []
+    monkeypatch.setattr("carrot.cli.build_carrot",
+                        lambda: called.append(1) or make_carrot())
+    from carrot.cli import main
+
+    main(["--social", "instagram", "--drain", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "usage: --away [N] | --drain <dir> | --social <platform>" in out
+    assert called == []
+
+
+def test_social_away_mutually_exclusive(monkeypatch, capsys):
+    called = []
+    monkeypatch.setattr("carrot.cli.build_carrot",
+                        lambda: called.append(1) or make_carrot())
+    from carrot.cli import main
+
+    main(["--away", "--social", "instagram"])
+    out = capsys.readouterr().out
+    assert "usage: --away [N] | --drain <dir> | --social <platform>" in out
+    assert called == []
+
+
+def test_help_lists_social():
+    assert "/social" in HELP_TEXT

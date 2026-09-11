@@ -18,6 +18,11 @@ from .environment import MockEnvironmentProbe
 from .initiative import ACTIVE_REASONS, should_initiate
 from .memory import MAX_MEMORY_TEXT_CHARS, Memory
 from .relationship import DIMENSIONS
+from .social import (
+    SocialConfig,
+    SocialChannel,
+    social_status,
+)
 from .tools import TOOLS
 from .voice import (
     VOICE_EMPTY_MSG,
@@ -42,7 +47,8 @@ HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "  /relationship show relationship\n"
              "  /avatar open the desktop avatar (closes on window exit)\n"
              "  /voice one voice turn (mock recognizer/synth)\n"
-             "  /drain process queued channel messages")
+             "  /drain process queued channel messages\n"
+             "  /social show social platform status")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
@@ -396,6 +402,17 @@ def _parse_drain_args(argv: list[str]) -> tuple[bool, str | None]:
     return (True, args[idx + 1])
 
 
+def _parse_social_args(argv: list[str]) -> tuple[bool, str | None]:
+    """Returns (has_flag, platform_or_None). None means flag absent or arg missing."""
+    args = list(argv or [])
+    if "--social" not in args:
+        return (False, None)
+    idx = args.index("--social")
+    if idx + 1 >= len(args):
+        return (True, None)
+    return (True, args[idx + 1])
+
+
 def _run_away_mode(carrot, max_n: int) -> None:
     """Bounded initiative actuation. Never calls process_turn, never writes
     to the conversation buffer. Each iteration loads drives read-only,
@@ -493,12 +510,37 @@ def main(argv=None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     away, max_n = _parse_away_args(args)
     has_drain, drain_dir = _parse_drain_args(args)
-    if away and has_drain:
-        print("usage: --away [N] | --drain <dir>")
+    has_social, social_platform = _parse_social_args(args)
+    if sum((away, has_drain, has_social)) > 1:
+        print("usage: --away [N] | --drain <dir> | --social <platform>")
         return
     carrot = build_carrot()
     if away:
         _run_away_mode(carrot, max_n)
+        return
+    if has_social:
+        if social_platform is None:
+            print("usage: --social <platform>")
+            return
+        try:
+            cfg = SocialConfig.load(ROOT / "config" / "social.json")
+        except FileNotFoundError:
+            print("(no social config)")
+            return
+        if social_platform not in cfg.platforms:
+            print(f"unknown platform: {social_platform}")
+            return
+        raw_dir = cfg.platforms[social_platform].get(
+            "inbox_dir", f"state/social/{social_platform}")
+        base = Path(raw_dir)
+        if not base.is_absolute():
+            base = ROOT / base
+        channel = SocialChannel(social_platform, base)
+        count = drain_inbox(carrot, channel)
+        if count == 0:
+            print(CHANNEL_EMPTY_MSG)
+        else:
+            print(f"drained: {count}")
         return
     if has_drain:
         if drain_dir is None:
@@ -566,6 +608,14 @@ def main(argv=None) -> None:
                 print(CHANNEL_EMPTY_MSG)
             else:
                 print(f"drained: {count}")
+            continue
+        if line.strip() == "/social":
+            try:
+                cfg = SocialConfig.load(ROOT / "config" / "social.json")
+            except FileNotFoundError:
+                print("(no social config)")
+                continue
+            print(social_status(cfg, ROOT))
             continue
         if line.strip() == "/initiative":
             print(format_initiative(carrot))

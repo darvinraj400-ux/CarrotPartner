@@ -2,6 +2,12 @@
 import pytest
 
 from carrot.channel import FileChannel, MockChannel, _FILENAME_RE
+from carrot.cli import drain_inbox
+from carrot.drives import DriveStore
+from carrot.initiative import InitiativeStore
+from carrot.memory import MemoryStore
+from carrot.permissions import PermissionStore
+from carrot.relationship import RelationshipStore
 from carrot.social import (
     PLATFORMS,
     MockSocialChannel,
@@ -10,6 +16,7 @@ from carrot.social import (
     social_status,
 )
 from tests.conftest import ROOT
+from tests.test_scenarios import make_carrot
 
 
 def _cfg():
@@ -181,3 +188,28 @@ def test_status_deterministic(tmp_path):
     cfg = SocialConfig(platforms={"instagram": {"enabled": True,
                                                 "inbox_dir": "soc/ig"}})
     assert social_status(cfg, tmp_path) == social_status(cfg, tmp_path)
+
+
+# --- Slice 15 Phase 2: no-separate-bot identity proof ---
+
+
+def test_social_path_answers_identically_to_cli(tmp_path):
+    # One core, two doors: shared store files + same clock origin, the
+    # same input through process_turn (CLI path) and through drain_inbox
+    # over a social channel must produce the identical reply.
+    stores = dict(
+        memory_store=MemoryStore(tmp_path / "m.json"),
+        drive_store=DriveStore(tmp_path / "d.json"),
+        permission_store=PermissionStore(tmp_path / "p.json"),
+        initiative_store=InitiativeStore(tmp_path / "i.json"),
+        relationship_store=RelationshipStore(tmp_path / "r.json"),
+    )
+    cli_carrot = make_carrot(**stores)
+    soc_carrot = make_carrot(**stores)
+    from carrot.state_store import StateStore
+
+    soc_carrot.store = StateStore(str(tmp_path / "state.json"))
+    cli_reply = cli_carrot.process_turn("hello there")
+    chan = MockSocialChannel("instagram", ["hello there"])
+    assert drain_inbox(soc_carrot, chan) == 1
+    assert chan.sent == [cli_reply]

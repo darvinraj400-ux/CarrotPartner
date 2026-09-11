@@ -990,6 +990,7 @@ _ALLOWED_JSON_BASENAMES = frozenset({
     # The relationship slice is the only remaining slice expected to add a
     # new persistent store; any future addition needs a planner-approved diff.
     "relationship.json",
+    "social.json",   # Slice 15: config/social.json (committed, handles only)
 })
 
 
