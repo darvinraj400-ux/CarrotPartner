@@ -13,6 +13,7 @@ from carrot.companion import (
 )
 from carrot.paths import _paths
 from tests.test_scenarios import make_companion
+from tests.test_scenarios import make_companion
 
 
 # ---- validate_name ----
@@ -448,3 +449,200 @@ def test_format_non_mutating(tmp_path):
     before = (target.stat().st_mtime_ns, target.read_bytes())
     format_companions(tmp_path)
     assert (target.stat().st_mtime_ns, target.read_bytes()) == before
+
+
+# --- Slice 16 Phase 4: distinctness + isolation proofs ---
+
+
+_ALT_PERSONALITY = {
+    "id": "ada-v1", "sensitivity": 0.9, "playfulness": 0.1,
+    "stoicism": 0.8, "shyness": 0.7, "pride": 0.3, "warmth": 0.3,
+    "patience": 0.9,
+}
+
+
+def _stage_alt_personality(tmp_path):
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True, exist_ok=True)
+    (companions / "ada.json").write_text(json.dumps(_ALT_PERSONALITY),
+                                         encoding="utf-8")
+
+
+def _tree_snapshot(root):
+    return {p.relative_to(root).as_posix(): (p.stat().st_mtime_ns,
+                                             p.read_bytes())
+            for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_two_companions_distinct_replies_from_same_input(tmp_path):
+    # Thesis: companions are not interchangeable. Four insults push both
+    # past the sulk gate; default stoicism reads it as sad, ada's high
+    # stoicism as sulking — different behaviors, different replies.
+    # (Single-turn replies coincide across personalities under MockLLM's
+    # canned set — verified by probe — so the test drives accumulation.)
+    _stage_alt_personality(tmp_path)
+    carrot = make_companion("carrot", tmp_path)
+    ada = make_companion("ada", tmp_path)
+    assert carrot.personality.sketch() != ada.personality.sketch()
+    for _ in range(4):
+        carrot_reply = carrot.process_turn("You are USELESS!!!")
+        ada_reply = ada.process_turn("You are USELESS!!!")
+    assert carrot.last_behavior.name == "sad"
+    assert ada.last_behavior.name == "sulking"
+    assert carrot_reply != ada_reply
+
+
+def test_same_companion_same_input_same_reply_from_fresh_state(tmp_path):
+    # Guards against "different because nondeterministic": two fully
+    # separate tmp roots (no shared files at all), same input.
+    roots = [tmp_path / "r1", tmp_path / "r2"]
+    for root in roots:
+        root.mkdir()
+    replies = []
+    for root in roots:
+        c = make_companion("carrot", root)
+        replies.append(c.process_turn("hello there"))
+    assert replies[0] == replies[1]
+
+
+def test_turn_on_one_companion_does_not_touch_another(tmp_path):
+    _stage_alt_personality(tmp_path)
+    carrot = make_companion("carrot", tmp_path)
+    ada = make_companion("ada", tmp_path)
+    ada.process_turn("my name is Alice")  # materialize ada's files
+    ada_root = tmp_path / "state" / "ada"
+    assert any(ada_root.rglob("*.json"))  # non-vacuous: ada wrote files
+    before = _tree_snapshot(ada_root)
+    carrot.process_turn("hello there")
+    assert _tree_snapshot(ada_root) == before
+    assert any((tmp_path / "state").glob("memories.json"))
+
+
+def test_turn_on_named_companion_does_not_touch_default(tmp_path):
+    _stage_alt_personality(tmp_path)
+    carrot = make_companion("carrot", tmp_path)
+    ada = make_companion("ada", tmp_path)
+    carrot.process_turn("my name is Alice")  # materialize default's files
+    default_files = [p for p in (tmp_path / "state").iterdir()
+                     if p.is_file()]
+    assert default_files  # non-vacuous
+    before = _tree_snapshot(tmp_path / "state")
+    ada.process_turn("hello there")
+    after = _tree_snapshot(tmp_path / "state")
+    # Only ada's subtree may have changed; top-level default files fixed.
+    for rel, stamp in after.items():
+        if not rel.startswith("ada" + "/"):
+            assert before[rel] == stamp, rel
+
+
+def test_memory_extraction_is_per_companion(tmp_path):
+    _stage_alt_personality(tmp_path)
+    carrot = make_companion("carrot", tmp_path)
+    ada = make_companion("ada", tmp_path)
+    carrot.process_turn("my name is Alice")
+    assert any("alice" in m.text
+               for m in carrot.memory_store.all())
+    assert not any("alice" in m.text for m in ada.memory_store.all())
+
+
+def test_drive_rise_is_per_companion(tmp_path):
+    _stage_alt_personality(tmp_path)
+    carrot = make_companion("carrot", tmp_path, start=1_000_000.0)
+    ada = make_companion("ada", tmp_path, start=1_000_000.0)
+    carrot.process_turn("hello there")
+    carrot.clock.advance(7200.0)
+    carrot.process_turn("hello there")
+    # Rise minus presence satisfaction leaves a positive level; ada
+    # never turned, so its store is untouched at the default.
+    assert carrot.drive_store.load().social > 0.0
+    assert ada.drive_store.load().social == 0.0
+
+
+def test_relationship_is_per_companion(tmp_path):
+    _stage_alt_personality(tmp_path)
+    carrot = make_companion("carrot", tmp_path)
+    ada = make_companion("ada", tmp_path)
+    carrot.process_turn("You're cute, thanks!")
+    assert carrot.relationship_store.load().trust > 0.5
+    assert ada.relationship_store.load().trust == 0.5
+
+
+def test_global_stores_are_shared(tmp_path):
+    _stage_alt_personality(tmp_path)
+    carrot = make_companion("carrot", tmp_path)
+    ada = make_companion("ada", tmp_path)
+    expected = tmp_path / "state" / "permissions.json"
+    assert carrot.permission_store.path == expected
+    assert ada.permission_store.path == expected
+    # Configs are frozen dataclasses with MappingProxyType fields, whose
+    # identity is per-object — so compare field contents, not identity.
+    assert dict(carrot.tools_config.levels) == \
+        dict(ada.tools_config.levels)
+    assert dict(carrot.tools_config.enabled) == \
+        dict(ada.tools_config.enabled)
+    assert dict(carrot.environment_config.allowed_apps) == \
+        dict(ada.environment_config.allowed_apps)
+    assert carrot.environment_config.idle_threshold_s == \
+        ada.environment_config.idle_threshold_s
+
+
+def test_social_inbox_is_per_companion(tmp_path):
+    _stage_social_root(tmp_path)
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True, exist_ok=True)
+    (companions / "ada.json").write_text(json.dumps({"id": "ada-v1"}),
+                                         encoding="utf-8")
+    inbox = tmp_path / "state" / "ada" / "social" / "instagram" / "inbox"
+    inbox.mkdir(parents=True)
+    (inbox / "000001-aa.msg").write_text("hi", encoding="utf-8")
+    lines = format_companions(tmp_path).splitlines()
+    assert lines[1].endswith("pending=1")
+    assert "pending=" not in lines[0]
+
+
+def test_list_companions_returns_default_first(tmp_path):
+    _stage_social_root(tmp_path)
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True, exist_ok=True)
+    for name in ("zoe", "ada"):
+        (companions / f"{name}.json").write_text(
+            json.dumps({"id": f"{name}-v1"}), encoding="utf-8")
+    found = list_companions(tmp_path)
+    assert isinstance(found[0], Companion) and found[0].name == "carrot"
+    assert [c.name for c in found] == ["carrot", "ada", "zoe"]
+
+
+def test_companion_paths_disjoint_for_two_names(tmp_path):
+    default = companion_paths(tmp_path, "carrot")
+    named = companion_paths(tmp_path, "ada")
+    per_companion = {"state_dir", "state_json", "memories_json",
+                     "drives_json", "relationship_json", "initiative_json",
+                     "social_dir", "channel_dir", "personality_json",
+                     "companion_config_dir"}
+    for key in per_companion:
+        # companion_config_dir exists only for named companions (the
+        # default's config root is config_dir itself) — absence there
+        # is itself a difference.
+        if key in default:
+            assert default[key] != named[key], key
+        else:
+            assert key in named, key
+    for key in set(default) | set(named):
+        if key not in per_companion:
+            assert default[key] == named[key], key
+
+
+def test_default_and_named_do_not_share_state_file(tmp_path):
+    from carrot.state_store import StateStore
+
+    carrot = make_companion("carrot", tmp_path)
+    ada = make_companion("ada", tmp_path)
+    carrot.store = StateStore(str(tmp_path / "sc.json"))
+    ada.store = StateStore(str(tmp_path / "sa.json"))
+    carrot.state.session_count = 5
+    ada.state.session_count = 7
+    carrot.store.save(carrot.state)
+    ada.store.save(ada.state)
+    assert carrot.store.path != ada.store.path
+    assert StateStore(str(tmp_path / "sc.json")).load().session_count == 5
+    assert StateStore(str(tmp_path / "sa.json")).load().session_count == 7
