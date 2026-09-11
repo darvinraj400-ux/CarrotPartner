@@ -1,5 +1,6 @@
 """Phase-5 tests: /ctx handler, last_context retention, help text."""
 import json
+import os
 import re
 import sys
 
@@ -1094,3 +1095,73 @@ def test_main_away_flag_runs_away(monkeypatch, capsys):
     out = capsys.readouterr().out.strip().splitlines()
     assert len(out) == 1
     assert "Carrot (slice 1)" not in capsys.readouterr().out
+
+
+# --- Slice 10 Phase 4: /ctx relevance line tests ---
+
+
+def _relevance_carrot(observations, *texts):
+    c = make_carrot()
+    c.environment_probe = MockEnvironmentProbe(observations)
+    _seed(c, *texts)
+    return c
+
+
+def test_ctx_relevance_no_after_neutral_turn():
+    # Fresh instance, empty probe: boost cannot fire. (A turn is
+    # required: pre-turn /ctx returns the frozen NO_CONTEXT_YET
+    # sentinel, pinned by test_ctx_before_any_turn.)
+    c = make_carrot()
+    c.process_turn("hello there")
+    assert c.last_boost_effect is False
+    assert "relevance: no" in handle_ctx(c)
+
+
+def test_ctx_relevance_yes_when_boost_changed_topk():
+    c = _relevance_carrot([RawObservation("chrome.exe", False)],
+                          "i love pizza", "my browser tabs are many")
+    c.process_turn("hello there")
+    assert c.last_boost_effect is True
+    assert "relevance: yes" in handle_ctx(c)
+
+
+def test_ctx_relevance_keeps_prior_content():
+    c = _relevance_carrot([RawObservation("chrome.exe", False)],
+                          "i love pizza", "my browser tabs are many")
+    c.process_turn("hello there")
+    out = handle_ctx(c)
+    assert "pending_question: False" in out
+    assert "playful_frame: False" in out
+    assert "recent_harshness: False" in out
+    assert "turns: 0" in out
+    assert "relevance: yes" in out
+
+
+def test_ctx_relevance_is_last_line():
+    c = _relevance_carrot([RawObservation("chrome.exe", False)],
+                          "i love pizza", "my browser tabs are many")
+    c.process_turn("hello there")
+    assert handle_ctx(c).splitlines()[-1] == "relevance: yes"
+    plain = make_carrot()
+    plain.process_turn("hello there")
+    assert handle_ctx(plain).splitlines()[-1] == "relevance: no"
+
+
+def test_ctx_relevance_no_mutation(tmp_path):
+    c = _relevance_carrot([RawObservation("chrome.exe", False)],
+                          "i love pizza", "my browser tabs are many")
+    c.process_turn("hello there")
+    before_state = c.state.to_dict()
+    mtime_before = os.stat(c.memory_store.path).st_mtime_ns
+    handle_ctx(c)
+    format_ctx(c.last_context, boost_effect=c.last_boost_effect)
+    assert c.state.to_dict() == before_state
+    assert os.stat(c.memory_store.path).st_mtime_ns == mtime_before
+
+
+def test_ctx_relevance_line_has_no_digits():
+    c = _relevance_carrot([RawObservation("chrome.exe", False)],
+                          "i love pizza", "my browser tabs are many")
+    c.process_turn("hello there")
+    assert handle_ctx(c).splitlines()[-1] in ("relevance: yes",
+                                              "relevance: no")

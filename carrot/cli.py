@@ -28,7 +28,7 @@ NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
 
-def format_ctx(ctx) -> str:
+def format_ctx(ctx, boost_effect: bool = False) -> str:
     """Render a ConversationContext as text. Reads only, no floats."""
     lines = [
         f"  pending_question: {ctx.pending_question}",
@@ -39,6 +39,7 @@ def format_ctx(ctx) -> str:
     ]
     for turn in list(ctx.turns)[-3:]:
         lines.append(f"    {turn.role}: {turn.text}")
+    lines.append(f"relevance: {'yes' if boost_effect else 'no'}")
     return "\n".join(lines)
 
 
@@ -46,7 +47,8 @@ def handle_ctx(carrot) -> str:
     """Return /ctx output without touching state, buffer, or disk."""
     if carrot.last_context is None:
         return NO_CONTEXT_YET
-    return format_ctx(carrot.last_context)
+    return format_ctx(carrot.last_context,
+                      boost_effect=carrot.last_boost_effect)
 
 
 def format_memories(store) -> str:
