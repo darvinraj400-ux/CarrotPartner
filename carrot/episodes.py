@@ -394,3 +394,78 @@ def derive(
         return tuple(updated if i == best_idx else e
                      for i, e in enumerate(items))
     return tuple(items) + (_create(),)
+
+
+def _overlap_count(a: Sequence[str], b: Sequence[str]) -> int:
+    """Count distinct tokens present in both sequences.
+
+    Non-string elements raise ValueError. Comparison is on the raw
+    strings (tokens are expected to be pre-tokenized, i.e. lowercase,
+    digit-stripped, stopword-filtered by the caller). Does not
+    re-tokenize.
+    """
+    try:
+        left = list(a or ())
+    except TypeError:
+        raise ValueError("bad overlap tokens")
+    try:
+        right = list(b or ())
+    except TypeError:
+        raise ValueError("bad overlap tokens")
+    for token in left + right:
+        if not isinstance(token, str):
+            raise ValueError("bad overlap tokens")
+    return len(set(left) & set(right))
+
+
+def recall(
+    episodes: Sequence[Episode],
+    turn_tokens: Sequence[str],
+    recent_topics_tokens: Sequence[str],
+    *,
+    config: EpisodesConfig,
+) -> tuple[Episode, ...]:
+    """Deterministic top-k episode retrieval for the current turn.
+
+    - Score: 2 * overlap(ep.topic_tokens, turn_tokens)
+           + 1 * overlap(ep.topic_tokens, recent_topics_tokens)
+    - Threshold: score >= 2 * config.retrieval_min_overlap.
+      With default retrieval_min_overlap=2, threshold is score >= 4.
+    - Sort: (-score, -last_seen_ts, first_seen_ts) — higher score
+      first, then newer last_seen_ts, then older first_seen_ts as
+      final tiebreak.
+    - Cap: return at most config.recall_k episodes (default 1).
+    - Below-threshold episodes are dropped; if none qualify, returns ().
+    - No refresh: does not modify episodes, does not touch timestamps.
+    - Pure: no I/O, no clock, no mutation of inputs.
+    """
+    if not isinstance(config, EpisodesConfig):
+        raise ValueError("bad episodes config")
+    try:
+        items = list(episodes or ())
+    except TypeError:
+        raise ValueError("bad episodes")
+    for episode in items:
+        if not isinstance(episode, Episode):
+            raise ValueError("bad episodes")
+    try:
+        turn = list(turn_tokens or ())
+    except TypeError:
+        raise ValueError("bad turn tokens")
+    try:
+        topics = list(recent_topics_tokens or ())
+    except TypeError:
+        raise ValueError("bad topic tokens")
+    for token in turn + topics:
+        if not isinstance(token, str):
+            raise ValueError("bad tokens")
+    threshold = 2 * config.retrieval_min_overlap
+    scored = []
+    for episode in items:
+        score = (2 * _overlap_count(episode.topic_tokens, turn)
+                 + _overlap_count(episode.topic_tokens, topics))
+        if score >= threshold:
+            scored.append((score, episode))
+    scored.sort(key=lambda pair: (-pair[0], -pair[1].last_seen_ts,
+                                  pair[1].first_seen_ts))
+    return tuple(episode for _, episode in scored[:config.recall_k])

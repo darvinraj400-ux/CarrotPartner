@@ -14,7 +14,9 @@ from carrot.episodes import (
     EpisodeStore,
     EpisodesConfig,
     _merge_tokens,
+    _overlap_count,
     derive,
+    recall,
 )
 from tests.conftest import ROOT
 
@@ -648,3 +650,147 @@ def test_derive_validation():
     with pytest.raises(ValueError):
         derive((_old_ep(),), ("rain",), 2500.0, "content",
                config="not-a-config")
+
+
+# --- Episodic Continuity Phase 3: retrieval tests ---
+
+
+def _rep(**over):
+    fields = dict(first_seen_ts=1000.0, last_seen_ts=2000.0, turn_count=2,
+                  topic_tokens=("garden", "rain", "soil", "seeds"),
+                  mood_label="content", last_behavior="normal")
+    fields.update(over)
+    return Episode(**fields)
+
+
+def test_overlap_count_distinct():
+    assert _overlap_count(("a", "b"), ("b", "c")) == 1
+    assert _overlap_count(("a", "a"), ("a",)) == 1
+    assert _overlap_count((), ("a",)) == 0
+    assert _overlap_count(("a",), ()) == 0
+
+
+def test_overlap_count_rejects_non_string():
+    with pytest.raises(ValueError):
+        _overlap_count(("a", 42), ("a",))
+
+
+def test_recall_perfect_overlap():
+    (got,) = recall((_rep(),), ("garden", "rain", "soil", "seeds"), (),
+                    config=_cfg())
+    assert got == _rep()
+
+
+def test_recall_exact_threshold():
+    # 2 turn matches -> 2*2 = 4, exactly the default threshold.
+    (got,) = recall((_rep(),), ("garden", "rain"), (),
+                    config=_cfg())
+    assert got == _rep()
+
+
+def test_recall_below_threshold():
+    # 1 turn + 1 topic = 2 + 1 = 3 < 4.
+    assert recall((_rep(),), ("garden",), ("soil",),
+                  config=_cfg()) == ()
+    # A single turn-token match alone (score 2) is below threshold.
+    assert recall((_rep(),), ("garden",), (), config=_cfg()) == ()
+
+
+def test_recall_topic_only():
+    (got,) = recall((_rep(),), (),
+                    ("garden", "rain", "soil", "seeds"),
+                    config=_cfg())
+    assert got == _rep()
+
+
+def test_recall_combined_turn_topic():
+    # 1 turn (2) + 2 topics (2) = 4, exactly at threshold.
+    (got,) = recall((_rep(),), ("garden",), ("rain", "soil"),
+                    config=_cfg())
+    assert got == _rep()
+
+
+def test_recall_no_overlap():
+    assert recall((_rep(),), ("chess",), ("tournament",),
+                  config=_cfg()) == ()
+
+
+def test_recall_higher_score_first():
+    low = _rep(topic_tokens=("garden", "rain", "soil", "seeds"))
+    high = _rep(topic_tokens=("garden", "rain", "soil", "seeds",
+                              "sprout"))
+    got = recall((low, high),
+                 ("garden", "rain", "soil", "seeds", "sprout"), (),
+                 config=EpisodesConfig(recall_k=2))
+    assert [e.topic_tokens for e in got] == [high.topic_tokens,
+                                             low.topic_tokens]
+
+
+def test_recall_newer_breaks_score_tie():
+    older = _rep(last_seen_ts=2000.0)
+    newer = _rep(last_seen_ts=3000.0)
+    got = recall((older, newer), ("garden", "rain"), (),
+                 config=EpisodesConfig(recall_k=2))
+    assert got == (newer, older)
+
+
+def test_recall_older_first_breaks_full_tie():
+    early = _rep(first_seen_ts=100.0, last_seen_ts=2000.0)
+    late = _rep(first_seen_ts=500.0, last_seen_ts=2000.0)
+    got = recall((early, late), ("garden", "rain"), (),
+                 config=EpisodesConfig(recall_k=2))
+    assert got == (early, late)
+
+
+def test_recall_default_cap_one():
+    first = _rep(topic_tokens=("garden", "rain"))
+    second = _rep(topic_tokens=("soil", "seeds"))
+    got = recall((first, second), ("garden", "rain", "soil", "seeds"),
+                 (), config=_cfg())
+    assert len(got) == 1
+
+
+def test_recall_cap_two():
+    first = _rep(topic_tokens=("garden", "rain"))
+    second = _rep(topic_tokens=("soil", "seeds"))
+    got = recall((first, second), ("garden", "rain", "soil", "seeds"),
+                 (), config=EpisodesConfig(recall_k=2))
+    assert got == (first, second)
+
+
+def test_recall_empty_episodes():
+    assert recall((), ("garden",), (), config=_cfg()) == ()
+
+
+def test_recall_empty_turn_and_topics():
+    assert recall((_rep(),), (), (), config=_cfg()) == ()
+
+
+def test_recall_all_below_threshold():
+    first = _rep(topic_tokens=("garden",))
+    second = _rep(topic_tokens=("soil",))
+    assert recall((first, second), ("chess",), (), config=_cfg()) == ()
+
+
+def test_recall_no_mutation():
+    first = _rep()
+    before = (first, first.to_dict())
+    got = recall((first,), ("garden", "rain"), (), config=_cfg())
+    assert first == before[0]
+    assert first.to_dict() == before[1]
+    assert got[0] is first
+
+
+def test_recall_deterministic():
+    args = ((_rep(),), ("garden", "rain"), ("soil",))
+    assert recall(*args, config=_cfg()) == recall(*args, config=_cfg())
+
+
+def test_recall_validation():
+    good = dict(config=_cfg())
+    with pytest.raises(ValueError):
+        recall((_rep(),), ("garden",), (), config="not-a-config")
+    with pytest.raises(ValueError):
+        recall((_rep(),), ("garden", 42), (), **good)
+    with pytest.raises(ValueError):
+        recall((_rep(), "not-an-episode"), ("garden", "rain"), (), **good)
