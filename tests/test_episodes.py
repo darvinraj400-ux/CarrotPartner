@@ -904,9 +904,9 @@ def test_last_episodes_empty_on_first_turn():
 
 
 def test_process_turn_prompt_stable_with_episodes_retained():
-    # Preview pin for Phase 5: step 5e retains episodes without
-    # consuming them, so identical turn sequences must still produce
-    # byte-identical prompts even once last_episodes is non-empty.
+    # Phase 5: step 5e retains episodes and the prompt now renders the
+    # retrieved prior episode. Identical sequences stay byte-identical,
+    # and the block carries the prior thread's tokens.
     first = make_carrot()
     second = make_carrot()
     for text in ("talking about gardening", "talking about soil"):
@@ -917,17 +917,17 @@ def test_process_turn_prompt_stable_with_episodes_retained():
         carrot.process_turn("talking about gardening")
     assert len(first.last_episodes) == 1
     assert first.llm.last_system == second.llm.last_system
-    assert "Previously:" not in first.llm.last_system
+    assert " Previously: talking, gardening, soil" in first.llm.last_system
 
 
-def test_process_turn_prompt_ignores_nonempty_last_episodes():
+def test_process_turn_prompt_renders_nonempty_last_episodes():
     c = make_carrot()
     c.process_turn("talking about gardening")
     c.process_turn("talking about soil")
     c.clock.advance(3600.0)
     c.process_turn("talking about gardening")
     assert len(c.last_episodes) == 1
-    assert "Previously:" not in c.llm.last_system
+    assert " Previously: talking, gardening, soil" in c.llm.last_system
 
 
 def test_process_turn_deterministic_episodes():

@@ -10,11 +10,13 @@ import pytest
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
 from carrot.carrot import (_FUSION_SENTENCE, _RELATIONSHIP_HIGH_SENTENCE,
-                             _TOOLS_BLOCK, _context_hint)
+                             _TOOLS_BLOCK, _context_hint, _episodes_block)
+from carrot.behavior import Behavior
 from carrot.context import ConversationContext
 from carrot.drives import DriveState, DriveStore
-from carrot.environment import (EnvironmentSnapshot, MockEnvironmentProbe,
-                                RawObservation)
+from carrot.environment import (EMPTY_SNAPSHOT, EnvironmentSnapshot,
+                                MockEnvironmentProbe, RawObservation)
+from carrot.episodes import Episode
 from carrot.memory import Memory
 from carrot.relationship import RelationshipState, RelationshipStore
 from carrot.personality import Personality
@@ -1740,3 +1742,132 @@ def test_no_verbatim_turn_text_in_new_stores():
                         offenders.append(name)
     assert not offenders, \
         f"Episode declares verbatim-turn field(s): {sorted(set(offenders))}"
+
+
+# --- Episodic Continuity Phase 5: prompt block tests ---
+
+
+def _ep_block_episode(**over):
+    fields = dict(first_seen_ts=1000.0, last_seen_ts=2000.0, turn_count=2,
+                  topic_tokens=("work", "deadline"), mood_label="content",
+                  last_behavior="normal")
+    fields.update(over)
+    return Episode(**fields)
+
+
+def _ep_prompt_carrot():
+    c = make_carrot()
+    return c
+
+
+def _ep_system(c, episodes=(), recalled=(), topics=("garden",)):
+    ctx = ConversationContext(recent_topics=tuple(topics))
+    return c._system_prompt(Behavior("normal", "low"), ctx, "tell me more",
+                            recalled, None, EMPTY_SNAPSHOT, False, None,
+                            episodes)
+
+
+def test_episodes_block_empty():
+    assert _episodes_block(()) == ""
+
+
+def test_episodes_block_single():
+    assert _episodes_block((_ep_block_episode(),)) == \
+        " Previously: work, deadline"
+
+
+def test_episodes_block_filtered():
+    episode = _ep_block_episode(topic_tokens=("work", "anger", "deadline"))
+    assert _episodes_block((episode,)) == " Previously: work, deadline"
+
+
+def test_episodes_block_all_filtered():
+    episode = _ep_block_episode(topic_tokens=("anger", "mood"))
+    assert _episodes_block((episode,)) == ""
+
+
+def test_episodes_block_first_only():
+    first = _ep_block_episode(topic_tokens=("work",))
+    second = _ep_block_episode(topic_tokens=("chess",))
+    assert _episodes_block((first, second)) == " Previously: work"
+
+
+def test_episodes_block_deterministic():
+    episode = _ep_block_episode()
+    assert _episodes_block((episode,)) == _episodes_block((episode,))
+
+
+def test_episodes_block_in_prompt():
+    c = _ep_prompt_carrot()
+    system = _ep_system(c, episodes=(_ep_block_episode(),))
+    assert " Previously: work, deadline" in system
+
+
+def test_episodes_absent_byte_identical():
+    c = _ep_prompt_carrot()
+    assert _ep_system(c, episodes=()) == _ep_system(c)
+
+
+def test_episodes_block_position():
+    c = _ep_prompt_carrot()
+    recalled = [Memory(text="my dog is funny", kind="fact",
+                       importance=0.5, created_ts=1000.0,
+                       last_recalled_ts=1000.0)]
+    system = _ep_system(c, episodes=(_ep_block_episode(),),
+                       recalled=recalled)
+    assert system.index("Memories:") < system.index("Previously:")
+    assert system.index("Previously:") < system.index("Context:")
+
+
+def _ep_skeleton_clean(system):
+    skeleton = re.sub(r'"[^"]*"', "", system)
+    assert re.search(r"\d", skeleton) is None
+    lowered = skeleton.lower()
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_episodes_skeleton_clean():
+    # Tokens of "My anger about the project deadline 12345 is real!":
+    # ("anger", "project", "deadline", "real") — "anger" is filtered
+    # at render; digits never reach tokens; the rest is clean.
+    from carrot.context import tokenize
+
+    tokens = tokenize("My anger about the project deadline 12345 is real!")
+    assert tokens == ("anger", "project", "deadline", "real")
+    c = _ep_prompt_carrot()
+    episode = _ep_block_episode(topic_tokens=tokens)
+    _ep_skeleton_clean(_ep_system(c, episodes=(episode,)))
+
+
+def test_episodes_content_dropped():
+    c = _ep_prompt_carrot()
+    episode = _ep_block_episode(topic_tokens=("game", "content"))
+    system = _ep_system(c, episodes=(episode,))
+    assert " Previously: game" in system
+    _ep_skeleton_clean(system)
+
+
+def test_episodes_secret_renders():
+    c = _ep_prompt_carrot()
+    episode = _ep_block_episode(topic_tokens=("secret", "code"))
+    system = _ep_system(c, episodes=(episode,))
+    assert " Previously: secret, code" in system
+    _ep_skeleton_clean(system)
+
+
+def test_process_turn_no_episodes_no_block():
+    c = make_carrot()
+    c.process_turn("hello there")
+    assert "Previously:" not in c.llm.last_system
+
+
+def test_process_turn_renders_prior_episode():
+    c = make_carrot()
+    c.process_turn("talking about gardening")
+    c.process_turn("talking about soil")
+    c.clock.advance(3600.0)
+    c.process_turn("talking about gardening")
+    assert " Previously: talking, gardening, soil" in c.llm.last_system

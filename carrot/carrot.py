@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from pathlib import Path
+from typing import Sequence
 
 from . import mood as mood_mod
 from .behavior import Behavior
@@ -75,6 +76,22 @@ _FUSION_SENTENCE = "Something here connects to what you've told me before."
 # Fires only when the closeness band is "high" (closeness >= 0.7).
 _RELATIONSHIP_HIGH_SENTENCE = "There's an easy familiarity here."
 
+# Tokens that would trip the prompt skeleton rule if rendered unquoted.
+# Mirrors test-side _STATE_NAMES. Kept as a production constant so the
+# render step can filter before rendering.
+_RENDER_EXCLUDED_TOKENS = frozenset({
+    # Emotion names
+    "happiness", "sadness", "anger", "hurt", "affection",
+    "excitement", "embarrassment",
+    # Mood labels
+    "content", "low", "tender", "tense", "bright",
+    # Trait nouns
+    "sensitivity", "playfulness", "stoicism", "shyness",
+    "pride", "warmth", "patience",
+    # Other
+    "mood",
+})
+
 # Mirrors cli.py: StateStore lives at <project>/state/state.json, so the
 # default memory file lives next to it. Tests and callers pass an
 # explicit store instead.
@@ -120,6 +137,26 @@ def _memories_block(recalled) -> str:
     parts = ['You told me: "' + _escape_memory(m.text) + '".'
              for m in recalled]
     return " Memories: " + " ".join(parts)
+
+
+def _episodes_block(episodes: Sequence[Episode]) -> str:
+    """Render at most one episode as a deterministic topic list.
+
+    - Empty input -> "".
+    - Otherwise render the single top episode as
+      " Previously: <token>, <token>, ...".
+    - Tokens in _RENDER_EXCLUDED_TOKENS are dropped.
+    - If all tokens are dropped, the block is "" (no empty "Previously:").
+    - No LLM. No derived labels. No interpolation of anything but the
+      filtered tokens.
+    """
+    if not episodes:
+        return ""
+    kept = [t for t in episodes[0].topic_tokens
+            if t not in _RENDER_EXCLUDED_TOKENS]
+    if not kept:
+        return ""
+    return " Previously: " + ", ".join(kept)
 
 
 def _context_hint(context: ConversationContext, user_text: str,
@@ -266,7 +303,8 @@ class Carrot:
                          recalled=(), drive_pull=None,
                          environment=EMPTY_SNAPSHOT,
                          boost_effect: bool = False,
-                         relationship_band: str | None = None) -> str:
+                         relationship_band: str | None = None,
+                         episodes: Sequence[Episode] = ()) -> str:
         degree = _BAND_WORDS.get(behavior.band, "a little")
         base = (
             f"{self.personality.sketch()} "
@@ -278,11 +316,12 @@ class Carrot:
         )
         tools = " " + _TOOLS_BLOCK
         memories = _memories_block(recalled)
+        episode_block = _episodes_block(episodes)
         context_hint = _context_hint(context, user_text, drive_pull,
                                       environment,
                                       boost_effect=boost_effect,
                                       relationship_band=relationship_band)
-        return base + tools + memories + context_hint
+        return base + tools + memories + episode_block + context_hint
 
     @staticmethod
     def _initial_importance(cand, user_text: str) -> float:
@@ -452,7 +491,8 @@ class Carrot:
                                      environment=self.last_environment,
                                      boost_effect=self.last_boost_effect,
                                      relationship_band=(
-                                         self.last_relationship_band))
+                                         self.last_relationship_band),
+                                     episodes=self.last_episodes)
         history = self.buffer.history_for_llm()
         user_str = str(text)
         reply = self.llm.generate(system=system, history=history,
