@@ -68,6 +68,7 @@ class MockLLM:
 def _post_json(url: str, payload: dict, headers: dict,
                timeout: float = 30.0) -> dict:
     body = json.dumps(payload).encode("utf-8")
+    headers = {**headers, "User-Agent": "Carrot/1.0"}
     req = urllib.request.Request(url, data=body, headers=headers,
                                  method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
