@@ -1,13 +1,17 @@
 """Slice 16 Phase-1 tests: companion value type, names, paths."""
+import json
+
 import pytest
 
 from carrot.companion import (
     DEFAULT_COMPANION,
     Companion,
     companion_paths,
+    list_companions,
     validate_name,
 )
 from carrot.paths import _paths
+from tests.test_scenarios import make_companion
 
 
 # ---- validate_name ----
@@ -187,3 +191,198 @@ def test_companion_equality(tmp_path):
 def test_paths_requires_root():
     with pytest.raises(TypeError):
         _paths()
+
+
+# --- Slice 16 Phase 2: list_companions + factory tests ---
+
+
+def _stage_personality(root, name="personality.json", ident="carrot-default-v1"):
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "config" / name).write_text(json.dumps({"id": ident}),
+                                        encoding="utf-8")
+
+
+def test_list_no_companions_dir(tmp_path):
+    _stage_personality(tmp_path)
+    found = list_companions(tmp_path)
+    assert len(found) == 1
+    assert found[0].name == "carrot"
+
+
+def test_list_default_first(tmp_path):
+    _stage_personality(tmp_path)
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True)
+    for name in ("zoe", "ada", "bob"):
+        (companions / f"{name}.json").write_text(
+            json.dumps({"id": f"{name}-v1"}), encoding="utf-8")
+    found = list_companions(tmp_path)
+    assert [c.name for c in found] == ["carrot", "ada", "bob", "zoe"]
+
+
+def test_list_discovers_personality_id(tmp_path):
+    _stage_personality(tmp_path)
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True)
+    (companions / "ada.json").write_text(json.dumps({"id": "ada-v1"}),
+                                         encoding="utf-8")
+    found = list_companions(tmp_path)
+    assert [c.name for c in found] == ["carrot", "ada"]
+    assert found[1].personality_id == "ada-v1"
+
+
+def test_list_sorted_by_name(tmp_path):
+    _stage_personality(tmp_path)
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True)
+    for name in ("zoe", "bob", "ada"):
+        (companions / f"{name}.json").write_text(json.dumps({"id": name}),
+                                                 encoding="utf-8")
+    assert [c.name for c in list_companions(tmp_path)] == \
+        ["carrot", "ada", "bob", "zoe"]
+
+
+def test_list_skips_malformed(tmp_path):
+    _stage_personality(tmp_path)
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True)
+    (companions / "broken.json").write_text("{not json", encoding="utf-8")
+    (companions / "ada.json").write_text(json.dumps({"id": "ada-v1"}),
+                                         encoding="utf-8")
+    assert [c.name for c in list_companions(tmp_path)] == ["carrot", "ada"]
+
+
+def test_list_skips_invalid_stem(tmp_path):
+    _stage_personality(tmp_path)
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True)
+    (companions / "Ada.json").write_text(json.dumps({"id": "Ada"}),
+                                         encoding="utf-8")
+    assert [c.name for c in list_companions(tmp_path)] == ["carrot"]
+
+
+def test_list_missing_id_falls_back_to_name(tmp_path):
+    _stage_personality(tmp_path)
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True)
+    (companions / "ada.json").write_text(json.dumps({}), encoding="utf-8")
+    found = list_companions(tmp_path)
+    assert found[1].personality_id == "ada"
+
+
+def test_list_deterministic(tmp_path):
+    _stage_personality(tmp_path)
+    assert list_companions(tmp_path) == list_companions(tmp_path)
+
+
+def test_list_pure_no_writes(tmp_path):
+    list_companions(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def _stage_build_root(tmp_path):
+    import shutil
+
+    from tests.conftest import ROOT
+
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / "state").mkdir(exist_ok=True)
+    for name in ("personality.json", "appraisal.json", "behavior.json",
+                 "decay.json", "environment.json"):
+        shutil.copy(ROOT / "config" / name, tmp_path / "config" / name)
+
+
+def test_build_default_companion_flat(tmp_path, monkeypatch):
+    from carrot.cli import build_carrot
+
+    _stage_build_root(tmp_path)
+    monkeypatch.setattr("carrot.cli.ROOT", tmp_path)
+    c = build_carrot(companion="carrot")
+    assert (tmp_path / "state" / "state.json").is_file()
+    assert c.state.session_count == 1
+    assert c.personality.id == "carrot-default-v1"
+
+
+def test_build_named_companion_namespaced(tmp_path, monkeypatch):
+    from carrot.cli import build_carrot
+
+    _stage_build_root(tmp_path)
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(exist_ok=True)
+    (companions / "ada.json").write_text(json.dumps({"id": "ada-v1"}),
+                                         encoding="utf-8")
+    monkeypatch.setattr("carrot.cli.ROOT", tmp_path)
+    c = build_carrot(companion="ada")
+    assert (tmp_path / "state" / "ada" / "state.json").is_file()
+    assert c.personality.id == "ada-v1"
+
+
+def test_build_unknown_companion_raises(tmp_path, monkeypatch):
+    from carrot.cli import build_carrot
+
+    _stage_build_root(tmp_path)
+    monkeypatch.setattr("carrot.cli.ROOT", tmp_path)
+    with pytest.raises(ValueError):
+        build_carrot(companion="Ada")
+
+
+def test_make_companion_working_turn(tmp_path):
+    c = make_companion("ada", tmp_path)
+    assert isinstance(c.process_turn("hello"), str) \
+        and c.process_turn("hello again")
+
+
+def test_make_companion_isolated_from_real_state(tmp_path):
+    from tests.conftest import ROOT
+
+    real = [p for p in (ROOT / "state").iterdir() if p.is_file()]
+    before = {p.name: p.stat().st_mtime_ns for p in real}
+    c = make_companion("ada", tmp_path)
+    c.process_turn("hello there")
+    after = {p.name: p.stat().st_mtime_ns for p in (ROOT / "state").iterdir()
+             if p.is_file()}
+    assert after == before
+
+
+def test_make_companion_namespaced_paths(tmp_path):
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True)
+    (companions / "ada.json").write_text(json.dumps({"id": "ada-v1"}),
+                                         encoding="utf-8")
+    c = make_companion("ada", tmp_path)
+    assert c.memory_store.path == tmp_path / "state" / "ada" / "memories.json"
+    assert c.personality.id == "ada-v1"
+
+
+def test_companions_do_not_share_state(tmp_path):
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True)
+    (companions / "ada.json").write_text(json.dumps({"id": "ada-v1"}),
+                                         encoding="utf-8")
+    first = make_companion("carrot", tmp_path)
+    second = make_companion("ada", tmp_path)
+    first.process_turn("You're cute, thanks!")
+    second.process_turn("You are USELESS!!!")
+    from carrot.emotions import EmotionState
+    from carrot.state_store import StateStore
+
+    StateStore(str(tmp_path / "state" / "state.json")).save(first.state)
+    StateStore(str(tmp_path / "state" / "ada" / "state.json")).save(
+        second.state)
+    a_state = EmotionState.from_dict(
+        json.loads((tmp_path / "state" / "state.json").read_text(
+            encoding="utf-8")))
+    b_state = EmotionState.from_dict(
+        json.loads((tmp_path / "state" / "ada" / "state.json").read_text(
+            encoding="utf-8")))
+    assert a_state.to_dict() != b_state.to_dict()
+    assert a_state.emotions["happiness"] > b_state.emotions["happiness"]
+    assert b_state.emotions["hurt"] > a_state.emotions["hurt"]
+
+
+def test_companions_share_global_permissions(tmp_path):
+    first = make_companion("carrot", tmp_path)
+    second = make_companion("ada", tmp_path)
+    expected = tmp_path / "state" / "permissions.json"
+    assert first.permission_store.path == expected
+    assert second.permission_store.path == expected

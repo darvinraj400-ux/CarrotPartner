@@ -116,6 +116,83 @@ def make_carrot(personality=None, start=None, memory_store=None,
     return carrot
 
 
+def make_companion(
+    name: str,
+    tmp_root,
+    *,
+    personality=None,
+    start: float = 1_000_000.0,
+    memory_store=None,
+    drive_store=None,
+    permission_store=None,
+    initiative_store=None,
+    relationship_store=None,
+):
+    """Isolated Carrot for a named companion under a tmp root.
+
+    Derives store paths via companion_paths(tmp_root, name); every
+    store lives under tmp_root/state/ (or tmp_root/state/<name>/ for
+    non-default). Kind-level configs load from the real config dir
+    (global per R3 — tests never mutate configs, so no isolation is
+    lost). Personality resolves: explicit override, else the staged
+    tmp companion file (tmp_root/config/companions/<name>.json, or
+    tmp_root/config/personality.json for "carrot"), else the real
+    config default. Stage the personality file before calling, or pass
+    personality= explicitly.
+    """
+    from carrot.companion import companion_paths
+
+    clock = FakeTime(start)
+    paths = companion_paths(Path(tmp_root), name)
+    if personality is None:
+        try:
+            personality = Personality.load(str(paths["personality_json"]))
+        except FileNotFoundError:
+            personality = Personality.load(
+                str(ROOT / "config" / "personality.json"))
+    llm = MockLLM()
+    memory_store = (memory_store if memory_store is not None
+                    else MemoryStore(paths["memories_json"], time_fn=clock))
+    drive_store = (drive_store if drive_store is not None
+                   else DriveStore(paths["drives_json"], time_fn=clock))
+    permission_store = (permission_store if permission_store is not None
+                        else PermissionStore(paths["permissions_json"],
+                                             time_fn=clock))
+    initiative_store = (initiative_store if initiative_store is not None
+                        else InitiativeStore(paths["initiative_json"],
+                                             time_fn=clock))
+    relationship_store = (relationship_store
+                          if relationship_store is not None
+                          else RelationshipStore(
+                              paths["relationship_json"], time_fn=clock))
+    carrot = Carrot(
+        state=EmotionState(),
+        personality=personality,
+        classifier=DeterministicClassifier(),
+        appraisal=Appraisal.load(str(ROOT / "config" / "appraisal.json")),
+        selector=BehaviorSelector.load(str(ROOT / "config" / "behavior.json")),
+        llm=llm,
+        decay_cfg=json.loads(
+            (ROOT / "config" / "decay.json").read_text(encoding="utf-8")),
+        buffer=ConversationBuffer(),
+        memory_store=memory_store,
+        drive_store=drive_store,
+        drives_config=DrivesConfig.load(
+            str(ROOT / "config" / "drives.json")),
+        permission_store=permission_store,
+        environment_config=EnvironmentConfig.load(
+            str(ROOT / "config" / "environment.json")),
+        initiative_config=InitiativeConfig.load(
+            str(ROOT / "config" / "initiative.json")),
+        initiative_store=initiative_store,
+        relationship_store=relationship_store,
+        time_fn=clock,
+    )
+    llm._behavior_getter = lambda: carrot.last_behavior
+    carrot.clock = clock
+    return carrot
+
+
 def replies(*cs):
     out = []
     for c in cs:

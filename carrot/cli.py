@@ -13,6 +13,7 @@ from .channel import (
     FileChannel,
     MAX_DRAIN,
 )
+from .companion import DEFAULT_COMPANION, companion_paths
 from .drives import drive_pull, update_rise
 from .environment import MockEnvironmentProbe
 from .initiative import ACTIVE_REASONS, should_initiate
@@ -309,7 +310,8 @@ def _load_json(name: str) -> dict:
         return json.load(fh)
 
 
-def build_carrot(llm=None, time_fn=None, environment_probe=None):
+def build_carrot(llm=None, time_fn=None, environment_probe=None,
+                 companion: str = DEFAULT_COMPANION):
     from .appraisal import Appraisal
     from .behavior import BehaviorSelector
     from .carrot import Carrot
@@ -321,7 +323,8 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None):
     from .personality import Personality
     from .state_store import StateStore
 
-    store = StateStore(str(_paths(ROOT)["state_json"]))
+    paths = companion_paths(ROOT, companion)
+    store = StateStore(str(paths["state_json"]))
     state = store.load()
     # Session accounting: count the launch and stamp first contact.
     # last_seen is deliberately untouched so decay/return logic is
@@ -330,9 +333,9 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None):
     if state.first_seen_ts == 0.0:
         state.first_seen_ts = (time_fn or time.time)()
     store.save(state)
-    personality = Personality.load(str(_paths(ROOT)["personality_json"]))
+    personality = Personality.load(str(paths["personality_json"]))
     environment_config = EnvironmentConfig.load(
-        str(_paths(ROOT)["environment_json"]))
+        str(paths["environment_json"]))
     if environment_probe is None:
         if sys.platform == "win32":
             from .environment_win32 import WindowsEnvironmentProbe
