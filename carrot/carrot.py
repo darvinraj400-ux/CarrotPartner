@@ -183,6 +183,21 @@ def _episodes_block(episodes: Sequence[Episode]) -> str:
     return " Previously: " + ", ".join(kept)
 
 
+def _mood_block(mood: str | None) -> str:
+    """Render Carrot's current mood as a small context signal.
+
+    Returns "" when mood is None or "content" (the default; omitting
+    keeps the prompt lean). Otherwise returns a short label + the mood
+    value, formatted to pass the skeleton scan.
+
+    The value is quoted; the label avoids the word "mood" (which is
+    in _STATE_NAMES). Do not add explanatory prose — this is a signal.
+    """
+    if mood is None or mood == "content":
+        return ""
+    return ' Feeling: "' + str(mood) + '"'
+
+
 def _context_hint(context: ConversationContext, user_text: str,
                    drive_pull=None, environment=None,
                    boost_effect: bool = False,
@@ -328,7 +343,8 @@ class Carrot:
                          environment=EMPTY_SNAPSHOT,
                          boost_effect: bool = False,
                          relationship_band: str | None = None,
-                         episodes: Sequence[Episode] = ()) -> str:
+                         episodes: Sequence[Episode] = (),
+                         mood: str | None = None) -> str:
         degree = _BAND_WORDS.get(behavior.band, "a little")
         base = (
             f"{self.personality.sketch()} "
@@ -341,11 +357,13 @@ class Carrot:
         tools = " " + _TOOLS_BLOCK
         memories = _memories_block(recalled)
         episode_block = _episodes_block(episodes)
+        mood_signal = _mood_block(mood)
         context_hint = _context_hint(context, user_text, drive_pull,
                                       environment,
                                       boost_effect=boost_effect,
                                       relationship_band=relationship_band)
-        return base + " " + _VOICE_BLOCK + tools + memories + episode_block + context_hint
+        return (base + " " + _VOICE_BLOCK + mood_signal + tools + memories
+                + episode_block + context_hint)
 
     @staticmethod
     def _initial_importance(cand, user_text: str) -> float:
@@ -516,7 +534,8 @@ class Carrot:
                                      boost_effect=self.last_boost_effect,
                                      relationship_band=(
                                          self.last_relationship_band),
-                                     episodes=self.last_episodes)
+                                     episodes=self.last_episodes,
+                                     mood=self.state.mood)
         history = self.buffer.history_for_llm()
         user_str = str(text)
         reply = self.llm.generate(system=system, history=history,

@@ -11,7 +11,7 @@ from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
 from carrot.carrot import (_FUSION_SENTENCE, _RELATIONSHIP_HIGH_SENTENCE,
                              _TOOLS_BLOCK, _VOICE_BLOCK, _context_hint,
-                             _episodes_block)
+                             _episodes_block, _mood_block)
 from carrot.behavior import Behavior
 from carrot.context import ConversationContext
 from carrot.drives import DriveState, DriveStore
@@ -1928,3 +1928,95 @@ def test_voice_block_skeleton_clean():
         assert re.search(rf"\b{word}\b", lowered) is None, word
     for word in _BANNED_PERMISSION_WORDS:
         assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+# --- Voice Layer Phase 2: mood threading ---
+
+
+def _mood_skeleton_clean(result):
+    stripped = re.sub(r'"[^"]*"', "", result)
+    assert re.search(r"\d", stripped) is None
+    lowered = stripped.lower()
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_mood_block_none_empty():
+    assert _mood_block(None) == ""
+
+
+def test_mood_block_content_empty():
+    assert _mood_block("content") == ""
+
+
+def test_mood_block_tender():
+    result = _mood_block("tender")
+    assert result
+    assert "tender" in result
+
+
+def test_mood_block_low_tense_bright():
+    for mood in ("low", "tense", "bright"):
+        result = _mood_block(mood)
+        assert result
+        assert mood in result
+
+
+def test_mood_block_quotes_value():
+    assert '"tender"' in _mood_block("tender")
+
+
+def test_mood_block_skeleton_clean():
+    for mood in ("tender", "low", "tense", "bright"):
+        _mood_skeleton_clean(_mood_block(mood))
+
+
+def test_mood_block_deterministic():
+    assert _mood_block("tender") == _mood_block("tender")
+
+
+def _mood_system(mood=None):
+    c = make_carrot()
+    ctx = ConversationContext(recent_topics=("garden",))
+    return c._system_prompt(Behavior("normal", "low"), ctx, "tell me more",
+                            (), None, EMPTY_SNAPSHOT, False, None, (),
+                            mood)
+
+
+def test_mood_block_in_prompt():
+    system = _mood_system("tender")
+    assert _mood_block("tender") in system
+
+
+def test_mood_block_absent_byte_identical():
+    assert _mood_system("content") == _mood_system()
+    c = make_carrot()
+    ctx = ConversationContext(recent_topics=("garden",))
+    explicit = c._system_prompt(Behavior("normal", "low"), ctx,
+                                "tell me more", (), None, EMPTY_SNAPSHOT,
+                                False, None, (), "content")
+    omitted = c._system_prompt(Behavior("normal", "low"), ctx,
+                               "tell me more", (), None, EMPTY_SNAPSHOT,
+                               False, None, ())
+    assert explicit == omitted == _mood_system()
+
+
+def test_mood_block_position():
+    system = _mood_system("tender")
+    assert system.index(_VOICE_BLOCK) < system.index(_mood_block("tender"))
+    assert system.index(_mood_block("tender")) < \
+        system.index(_TOOLS_BLOCK)
+
+
+def test_mood_skeleton_three_turns():
+    for mood in ("content", "tender", "tense"):
+        system = _mood_system(mood)
+        skeleton = _skeleton(system)
+        assert re.search(r"\d", skeleton) is None
+        lowered = skeleton.lower()
+        for word in _STATE_NAMES:
+            assert re.search(rf"\b{word}\b", lowered) is None, word
+        for word in _BANNED_PERMISSION_WORDS:
+            assert re.search(rf"\b{word}\b", lowered) is None, word
