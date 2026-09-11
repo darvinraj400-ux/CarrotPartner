@@ -88,7 +88,12 @@ class Personality:
             if len(phrases) >= 2:
                 break
         if not phrases:
-            return first
-        if len(phrases) == 1:
-            return first + " Carrot " + phrases[0] + "."
-        return first + " Carrot " + phrases[0] + " and " + phrases[1] + "."
+            core = first
+        elif len(phrases) == 1:
+            core = first + " Carrot " + phrases[0] + "."
+        else:
+            core = first + " Carrot " + phrases[0] + " and " + phrases[1] + "."
+        # Carriage clause: shared manner all personalities manifest in.
+        # Unconditional — traits differentiate, carriage does not.
+        return core + " Carrot keeps it easy — lowkey, laconic, " \
+            "unbothered. Says more with less."

@@ -39,9 +39,13 @@ def test_sketch_vocabulary_pinned():
     # accident: pin the exact output for carrot-default-v1.
     # Deliberately updated in Slice 4 Phase 4 (patience adjective +
     # dispositional second sentence).
+    # Deliberately updated in Voice Layer Phase 4 (carriage clause
+    # appended to sketch()).
     assert Personality().sketch() == (
         "Carrot is playful, warm, expressive, outgoing, humble, "
-        "sensitive, patient. Carrot leans into jokes and speaks freely.")
+        "sensitive, patient. Carrot leans into jokes and speaks freely. "
+        "Carrot keeps it easy — lowkey, laconic, unbothered. Says more "
+        "with less.")
 
 
 def test_patience_default():
@@ -66,25 +70,39 @@ def test_patience_missing_key_defaults(tmp_path):
 
 
 def test_default_personality_sketch_exact():
+    # Phase 4 amendment: carriage clause appended to sketch().
     assert Personality().sketch() == (
         "Carrot is playful, warm, expressive, outgoing, humble, "
-        "sensitive, patient. Carrot leans into jokes and speaks freely.")
+        "sensitive, patient. Carrot leans into jokes and speaks freely. "
+        "Carrot keeps it easy — lowkey, laconic, unbothered. Says more "
+        "with less.")
 
 
-def test_sketch_single_sentence_without_extremes():
+def test_sketch_no_extreme_phrases_without_extremes():
+    # Phase 4 amendment: renamed (was
+    # test_sketch_single_sentence_without_extremes) and extended —
+    # carriage clause appended to sketch().
+    from carrot.personality import _HIGH_PHRASES, _LOW_PHRASES
+
     sketch = Personality(playfulness=0.5, shyness=0.5, warmth=0.5,
                          sensitivity=0.5, stoicism=0.5, pride=0.5,
                          patience=0.5).sketch()
-    assert sketch == ("Carrot is playful, warm, stoic, shy, proud, "
-                      "sensitive, patient.")
-    assert " and " not in sketch
-    assert sketch.count("Carrot ") == 1
+    for word in ("playful", "warm", "stoic", "shy", "proud",
+                 "sensitive", "patient"):
+        assert word in sketch
+    assert "keeps it easy" in sketch
+    assert "lowkey" in sketch
+    for phrase in list(_HIGH_PHRASES.values()) + list(
+            _LOW_PHRASES.values()):
+        assert phrase not in sketch
 
 
 def test_sketch_single_phrase():
+    # Phase 4 amendment: carriage clause appended to sketch(); the
+    # phrase clause is now mid-string, so containment replaces endswith.
     sketch = Personality(playfulness=0.5, shyness=0.5, warmth=0.5,
                          stoicism=0.8).sketch()
-    assert sketch.endswith("Carrot keeps feelings close.")
+    assert "Carrot keeps feelings close." in sketch
     assert " and " not in sketch
 
 
@@ -100,11 +118,14 @@ def test_sketch_patience_adjective():
 
 
 def test_sketch_caps_at_two_phrases():
+    # Phase 4 amendment: carriage clause appended to sketch().
     sketch = Personality(sensitivity=0.8, playfulness=0.8, stoicism=0.8,
                          shyness=0.8).sketch()
     assert sketch == ("Carrot is playful, warm, stoic, shy, humble, "
                       "sensitive, patient. Carrot takes words to "
-                      "heart and leans into jokes.")
+                      "heart and leans into jokes. Carrot keeps it easy "
+                      "— lowkey, laconic, unbothered. Says more "
+                      "with less.")
 
 
 def test_sketch_traits_order_priority():

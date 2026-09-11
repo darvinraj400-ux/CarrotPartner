@@ -2054,8 +2054,77 @@ def test_mood_skeleton_three_turns():
         system = _mood_system(mood)
         skeleton = _skeleton(system)
         assert re.search(r"\d", skeleton) is None
-        lowered = skeleton.lower()
-        for word in _STATE_NAMES:
-            assert re.search(rf"\b{word}\b", lowered) is None, word
-        for word in _BANNED_PERMISSION_WORDS:
-            assert re.search(rf"\b{word}\b", lowered) is None, word
+    lowered = skeleton.lower()
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+# --- Voice Layer Phase 4: personality pass ---
+
+
+def test_voice_block_emoji_rule_present():
+    assert "every reply" in _VOICE_BLOCK
+    assert "occasional" in _VOICE_BLOCK
+
+
+def test_voice_block_register_mirroring_present():
+    assert "typing rhythm" in _VOICE_BLOCK
+    assert "slang" in _VOICE_BLOCK
+
+
+def test_voice_block_short_reply_permitted():
+    assert "short reply" in _VOICE_BLOCK
+    assert "lol yeah" in _VOICE_BLOCK
+
+
+def test_voice_block_banter_disagreement_present():
+    assert "messing with you" in _VOICE_BLOCK
+    assert "consultant" in _VOICE_BLOCK
+
+
+def test_voice_block_venting_not_therapy_present():
+    assert "venting" in _VOICE_BLOCK
+    assert "therapy-speak" in _VOICE_BLOCK
+
+
+def test_voice_block_still_skeleton_clean():
+    assert re.search(r"\d", _VOICE_BLOCK) is None
+    assert '"' not in _VOICE_BLOCK
+    lowered = _VOICE_BLOCK.lower()
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_voice_block_length_bounded():
+    assert len(_VOICE_BLOCK) <= 1600
+
+
+def test_sketch_contains_carriage_sentence():
+    sketch = Personality().sketch()
+    assert "keeps it easy" in sketch
+    assert "lowkey" in sketch
+
+
+def test_carriage_sentence_skeleton_clean():
+    sketch = Personality().sketch()
+    assert re.search(r"\d", sketch) is None
+    lowered = sketch.lower()
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_carriage_sentence_static():
+    from carrot.personality import Personality as _P
+
+    first = _P().sketch()
+    second = _P(sensitivity=0.9, warmth=0.2).sketch()
+    tail = "Carrot keeps it easy — lowkey, laconic, unbothered. Says " \
+        "more with less."
+    assert first.endswith(tail)
+    assert second.endswith(tail)
