@@ -1,10 +1,13 @@
 """Slice 11 Phase-1 tests: relationship data layer, config, apply_event."""
+import json
+
 import pytest
 
 from carrot.relationship import (
     DIMENSIONS,
     RelationshipConfig,
     RelationshipState,
+    RelationshipStore,
     apply_event,
 )
 from tests.conftest import ROOT
@@ -242,3 +245,138 @@ def test_apply_event_deterministic():
                          cfg)
     assert first == second
     assert DIMENSIONS == ("trust", "closeness")
+
+
+# --- Slice 11 Phase 2: RelationshipStore tests ---
+
+
+def _store(tmp_path, name="relationship.json"):
+    return RelationshipStore(tmp_path / name)
+
+
+def _write(path, obj):
+    path.write_text(json.dumps(obj), encoding="utf-8")
+
+
+def test_store_missing_file_returns_defaults(tmp_path):
+    store = _store(tmp_path)
+    state = store.load()
+    assert state == RelationshipState()
+    assert not (tmp_path / "relationship.json").exists()
+
+
+def test_store_round_trip(tmp_path):
+    store = _store(tmp_path)
+    state = RelationshipState(trust=0.7, closeness=0.3,
+                              updated_ts={"trust": 100.0})
+    store.save(state)
+    loaded = store.load()
+    assert loaded.trust == 0.7
+    assert loaded.closeness == 0.3
+    assert dict(loaded.updated_ts) == {"trust": 100.0}
+
+
+def test_store_save_type_check(tmp_path):
+    with pytest.raises(TypeError):
+        _store(tmp_path).save("not a state")
+
+
+def test_store_malformed_json_quarantines(tmp_path):
+    path = tmp_path / "relationship.json"
+    path.write_text("{not json", encoding="utf-8")
+    state = _store(tmp_path).load()
+    assert state == RelationshipState()
+    assert not path.exists()
+    assert len(list(tmp_path.glob("quarantine-relationship-*.json"))) == 1
+
+
+def test_store_top_level_non_object_quarantines(tmp_path):
+    path = tmp_path / "relationship.json"
+    _write(path, [1, 2, 3])
+    assert _store(tmp_path).load() == RelationshipState()
+    assert not path.exists()
+    assert len(list(tmp_path.glob("quarantine-relationship-*.json"))) == 1
+
+
+def test_store_unparseable_version_quarantines(tmp_path):
+    path = tmp_path / "relationship.json"
+    _write(path, {"version": "x", "trust": 0.7})
+    assert _store(tmp_path).load() == RelationshipState()
+    assert not path.exists()
+    assert len(list(tmp_path.glob("quarantine-relationship-*.json"))) == 1
+
+
+def test_store_unknown_version_no_quarantine(tmp_path):
+    path = tmp_path / "relationship.json"
+    _write(path, {"version": 2, "trust": 0.7})
+    assert _store(tmp_path).load() == RelationshipState()
+    assert path.exists()
+    assert list(tmp_path.glob("quarantine-relationship-*.json")) == []
+
+
+def test_store_non_numeric_trust_defaults(tmp_path):
+    path = tmp_path / "relationship.json"
+    _write(path, {"version": 1, "trust": "high", "closeness": 0.3})
+    state = _store(tmp_path).load()
+    assert state.trust == 0.5
+    assert state.closeness == 0.3
+    assert path.exists()  # no quarantine over a bad scalar
+
+
+def test_store_out_of_range_trust_clamped(tmp_path):
+    path = tmp_path / "relationship.json"
+    _write(path, {"version": 1, "trust": 1.5, "closeness": 0.3})
+    assert _store(tmp_path).load().trust == 1.0
+    _write(path, {"version": 1, "trust": -0.1, "closeness": 0.3})
+    assert _store(tmp_path).load().trust == 0.0
+    assert list(tmp_path.glob("quarantine-relationship-*.json")) == []
+
+
+def test_store_bool_trust_rejected(tmp_path):
+    path = tmp_path / "relationship.json"
+    _write(path, {"version": 1, "trust": True, "closeness": 0.3})
+    state = _store(tmp_path).load()
+    assert state.trust == 0.5
+    assert state.closeness == 0.3
+
+
+def test_store_bad_updated_ts_key_skipped(tmp_path):
+    path = tmp_path / "relationship.json"
+    _write(path, {"version": 1, "trust": 0.7,
+                  "updated_ts": {"trust": 100.0, "unknown": 200.0}})
+    state = _store(tmp_path).load()
+    assert dict(state.updated_ts) == {"trust": 100.0}
+
+
+def test_store_bad_updated_ts_value_skipped(tmp_path):
+    path = tmp_path / "relationship.json"
+    _write(path, {"version": 1, "trust": 0.7,
+                  "updated_ts": {"trust": "x", "closeness": 300.0}})
+    state = _store(tmp_path).load()
+    assert dict(state.updated_ts) == {"closeness": 300.0}
+
+
+def test_store_non_mapping_updated_ts_empty(tmp_path):
+    path = tmp_path / "relationship.json"
+    _write(path, {"version": 1, "trust": 0.7,
+                  "updated_ts": "not a mapping"})
+    assert dict(_store(tmp_path).load().updated_ts) == {}
+
+
+def test_store_missing_updated_ts_empty(tmp_path):
+    path = tmp_path / "relationship.json"
+    _write(path, {"version": 1, "trust": 0.7, "closeness": 0.3})
+    assert dict(_store(tmp_path).load().updated_ts) == {}
+
+
+def test_store_size_cap_enforced(tmp_path, monkeypatch):
+    # No constructible RelationshipState can exceed 4 KB (updated_ts is
+    # capped to two float-valued dims), so shrink the cap to prove the
+    # enforcement path raises before any write occurs.
+    import carrot.relationship as rel
+
+    assert rel.MAX_RELATIONSHIP_BYTES == 4096
+    monkeypatch.setattr(rel, "MAX_RELATIONSHIP_BYTES", 10)
+    with pytest.raises(ValueError):
+        _store(tmp_path).save(RelationshipState())
+    assert not (tmp_path / "relationship.json").exists()

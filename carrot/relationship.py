@@ -6,17 +6,25 @@ Contract:
 - Not a score: dimensions are separate, with separate semantics.
 - No project imports: pure math over passed-in floats and strings.
 - Slice 11 persists dimensions + per-dimension updated_ts only.
+
+Persistence: state/relationship.json (schema v1, ≤4 KB, atomic write,
+own quarantine prefix). Load is fail-soft: malformed file → quarantine +
+defaults; bad scalar → clamp or default; bad updated_ts entry → skipped.
 """
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Mapping
+from typing import Callable, Mapping
 
 DIMENSIONS = ("trust", "closeness")
 RELATIONSHIP_SCHEMA_VERSION = 1
+MAX_RELATIONSHIP_BYTES = 4096
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -182,3 +190,111 @@ def apply_event(
     return RelationshipState(trust=levels["trust"],
                              closeness=levels["closeness"],
                              updated_ts=stamps)
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    # Deliberate duplication of the sibling-store pattern: relationship
+    # persistence must not depend on any sibling module, so the five
+    # files (and their quarantine/version schemes) stay independent.
+    parent = Path(path).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _coerce_level(value, default: float = 0.5) -> float:
+    # Load-time fail-soft: bool/non-numeric → default, out-of-range → clamp.
+    if isinstance(value, bool):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return _clamp(number)
+
+
+class RelationshipStore:
+    """Load/save RelationshipState. No mutation helpers: the orchestrator
+    loads, calls apply_event, and saves."""
+
+    def __init__(self, path: Path,
+                 time_fn: Callable[[], float] = time.time):
+        self.path = Path(path)
+        self._time_fn = time_fn or time.time
+
+    def _quarantine(self) -> None:
+        try:
+            dest = self.path.parent / (
+                f"quarantine-relationship-{int(self._time_fn())}.json")
+            os.replace(self.path, dest)
+        except OSError:
+            pass
+
+    def load(self) -> RelationshipState:
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return RelationshipState()
+        except (UnicodeDecodeError, OSError):
+            self._quarantine()
+            return RelationshipState()
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            self._quarantine()
+            return RelationshipState()
+        if not isinstance(data, dict) or "version" not in data:
+            self._quarantine()
+            return RelationshipState()
+        try:
+            version = int(data["version"])
+        except (TypeError, ValueError):
+            self._quarantine()
+            return RelationshipState()
+        if version != RELATIONSHIP_SCHEMA_VERSION:
+            return RelationshipState()
+        trust = _coerce_level(data.get("trust", 0.5))
+        closeness = _coerce_level(data.get("closeness", 0.5))
+        raw_ts = data.get("updated_ts", {})
+        stamps = {}
+        if isinstance(raw_ts, Mapping):
+            for key, value in raw_ts.items():
+                if key not in DIMENSIONS:
+                    continue
+                if isinstance(value, bool):
+                    continue
+                try:
+                    number = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if number < 0:
+                    continue
+                stamps[key] = number
+        try:
+            return RelationshipState(trust=trust, closeness=closeness,
+                                     updated_ts=stamps)
+        except ValueError:
+            return RelationshipState()
+
+    def save(self, state: RelationshipState) -> None:
+        if not isinstance(state, RelationshipState):
+            raise TypeError("can only save RelationshipState objects")
+        payload = {"version": RELATIONSHIP_SCHEMA_VERSION,
+                   "trust": float(state.trust),
+                   "closeness": float(state.closeness),
+                   "updated_ts": dict(state.updated_ts)}
+        encoded = (json.dumps(payload, ensure_ascii=False, indent=2)
+                   + "\n").encode("utf-8")
+        if len(encoded) > MAX_RELATIONSHIP_BYTES:
+            raise ValueError("relationship state exceeds size cap")
+        _atomic_write_json(self.path, payload)
