@@ -17,6 +17,7 @@ from .drives import drive_pull, update_rise
 from .environment import MockEnvironmentProbe
 from .initiative import ACTIVE_REASONS, should_initiate
 from .memory import MAX_MEMORY_TEXT_CHARS, Memory
+from .paths import _paths
 from .relationship import DIMENSIONS
 from .social import (
     SocialConfig,
@@ -304,7 +305,7 @@ def format_dbg(carrot) -> str:
     return "\n".join(lines)
 
 def _load_json(name: str) -> dict:
-    with open(ROOT / "config" / name, "r", encoding="utf-8") as fh:
+    with open(_paths(ROOT)["config_dir"] / name, "r", encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -320,7 +321,7 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None):
     from .personality import Personality
     from .state_store import StateStore
 
-    store = StateStore(str(ROOT / "state" / "state.json"))
+    store = StateStore(str(_paths(ROOT)["state_json"]))
     state = store.load()
     # Session accounting: count the launch and stamp first contact.
     # last_seen is deliberately untouched so decay/return logic is
@@ -329,9 +330,9 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None):
     if state.first_seen_ts == 0.0:
         state.first_seen_ts = (time_fn or time.time)()
     store.save(state)
-    personality = Personality.load(str(ROOT / "config" / "personality.json"))
+    personality = Personality.load(str(_paths(ROOT)["personality_json"]))
     environment_config = EnvironmentConfig.load(
-        str(ROOT / "config" / "environment.json"))
+        str(_paths(ROOT)["environment_json"]))
     if environment_probe is None:
         if sys.platform == "win32":
             from .environment_win32 import WindowsEnvironmentProbe
@@ -523,7 +524,7 @@ def main(argv=None) -> None:
             print("usage: --social <platform>")
             return
         try:
-            cfg = SocialConfig.load(ROOT / "config" / "social.json")
+            cfg = SocialConfig.load(_paths(ROOT)["social_config_json"])
         except FileNotFoundError:
             print("(no social config)")
             return
@@ -587,7 +588,7 @@ def main(argv=None) -> None:
             print(format_relationship(carrot))
             continue
         if line.strip() == "/avatar":
-            print(launch_avatar(ROOT / "state" / "state.json"))
+            print(launch_avatar(_paths(ROOT)["state_json"]))
             continue
         if line.strip() == "/voice":
             recognizer = MockSpeechRecognizer()
@@ -602,7 +603,7 @@ def main(argv=None) -> None:
             carrot.store.save(carrot.state)
             continue
         if line.strip() == "/drain":
-            channel = FileChannel(ROOT / "state" / "channel")
+            channel = FileChannel(_paths(ROOT)["channel_dir"])
             count = drain_inbox(carrot, channel)
             if count == 0:
                 print(CHANNEL_EMPTY_MSG)
@@ -611,7 +612,7 @@ def main(argv=None) -> None:
             continue
         if line.strip() == "/social":
             try:
-                cfg = SocialConfig.load(ROOT / "config" / "social.json")
+                cfg = SocialConfig.load(_paths(ROOT)["social_config_json"])
             except FileNotFoundError:
                 print("(no social config)")
                 continue

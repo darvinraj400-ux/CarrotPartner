@@ -1612,3 +1612,93 @@ def test_social_config_no_secrets():
         return None
 
     assert walk(data) is None
+
+
+# --- Slice 16 Phase 0: companion pre-pins ---
+
+
+def test_companion_module_boundaries():
+    # Slice 16 boundary: companion.py holds the Companion value type,
+    # path construction, name validation, and the factory that returns a
+    # live Carrot instance. The factory composes existing Carrot + store
+    # + config objects; it does not introduce a new orchestration
+    # surface.
+    path = ROOT / "carrot" / "companion.py"
+    if not path.exists():
+        pytest.skip("companion.py lands in Phase 1")
+    banned_mods = {"carrot", "cli", "llm"}
+    banned_calls = {"process_turn", "generate"}
+    offenders = []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if parts[0] in banned_mods or (parts[0] == "carrot"
+                                               and len(parts) > 1):
+                    offenders.append(a.name)
+        elif isinstance(node, ast.ImportFrom):
+            mod_name = node.module or ""
+            parts = mod_name.split(".")
+            if node.level == 0 and (parts[0] in banned_mods or (
+                    parts[0] == "carrot" and len(parts) > 1)):
+                offenders.append(mod_name)
+            elif node.level > 0:
+                if parts and parts[0] in banned_mods:
+                    offenders.append(mod_name)
+                else:
+                    for a in node.names:
+                        if a.name in banned_mods:
+                            offenders.append(a.name)
+        elif isinstance(node, ast.Call) \
+                and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in banned_calls:
+            offenders.append(node.func.attr)
+    assert offenders == []
+    mods = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            mods.add((node.module or "").split(".")[0])
+    allowed = set(sys.stdlib_module_names) | {"carrot"}
+    assert mods <= allowed, mods
+
+
+def test_companion_names_validated():
+    # Slice 16 boundary: companion names are filesystem path segments.
+    # Validation lives in companion.validate_name; any relaxation of the
+    # rule must retire this pin with a planner-visible diff.
+    companion = pytest.importorskip("carrot.companion")
+    validate = getattr(companion, "validate_name", None)
+    if validate is None:
+        pytest.skip("validate_name lands in Phase 1")
+    for good in ("carrot", "ada", "ada-2", "x" * 32, "a-b-c-1"):
+        assert validate(good) == good
+    for bad in ("", "x" * 33, "Ada", "ada_x", "../x", "/abs",
+                "ada/sub", " ada", "ada "):
+        with pytest.raises(ValueError):
+            validate(bad)
+
+
+def test_default_companion_uses_flat_paths():
+    # Slice 16 boundary: the default companion ("carrot") keeps the flat
+    # layout forever (zero migration); named companions namespace under
+    # state/<name>/. Permissions stay global by design (user-level).
+    companion = pytest.importorskip("carrot.companion")
+    paths_for = getattr(companion, "companion_paths", None)
+    if paths_for is None:
+        pytest.skip("companion_paths lands in Phase 1")
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="carrot-pin-") as tmp:
+        from pathlib import Path as _Path
+
+        root = _Path(tmp)
+        flat = paths_for(root, "carrot")
+        assert flat["state_json"] == root / "state" / "state.json"
+        named = paths_for(root, "ada")
+        assert named["state_json"] == \
+            root / "state" / "ada" / "state.json"
+        assert named["permissions_json"] == \
+            root / "state" / "permissions.json"
