@@ -306,3 +306,39 @@ def test_boost_scaling_deterministic(tmp_path):
     assert [m.text for m in first.last_recalled] == \
         [m.text for m in second.last_recalled]
     assert first.llm.last_system == second.llm.last_system
+
+
+# --- Slice 11 Phase 5: relationship sentence integration ---
+
+
+def test_relationship_sentence_present_when_high(tmp_path):
+    from carrot.carrot import _RELATIONSHIP_HIGH_SENTENCE
+
+    store = _seeded_store(tmp_path, 0.5, 0.69)
+    c = make_carrot(relationship_store=store)
+    c.process_turn("i love you")
+    assert c.last_relationship_band == "high"
+    assert _RELATIONSHIP_HIGH_SENTENCE in c.llm.last_system
+
+
+def test_relationship_sentence_absent_when_none(tmp_path):
+    from carrot.carrot import _RELATIONSHIP_HIGH_SENTENCE
+
+    c = make_carrot(
+        relationship_store=RelationshipStore(tmp_path / "rel.json"))
+    c.process_turn("hello there")
+    assert c.last_relationship_band is None
+    assert _RELATIONSHIP_HIGH_SENTENCE not in c.llm.last_system
+
+
+def test_relationship_sentence_deterministic(tmp_path):
+    from carrot.carrot import _RELATIONSHIP_HIGH_SENTENCE
+
+    first = make_carrot(
+        relationship_store=_seeded_store(tmp_path, 0.5, 0.70, "a.json"))
+    second = make_carrot(
+        relationship_store=_seeded_store(tmp_path, 0.5, 0.70, "b.json"))
+    first.process_turn("hello there")
+    second.process_turn("hello there")
+    assert _RELATIONSHIP_HIGH_SENTENCE in first.llm.last_system
+    assert first.llm.last_system == second.llm.last_system

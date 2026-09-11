@@ -9,12 +9,14 @@ import pytest
 
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
-from carrot.carrot import _FUSION_SENTENCE, _TOOLS_BLOCK, _context_hint
+from carrot.carrot import (_FUSION_SENTENCE, _RELATIONSHIP_HIGH_SENTENCE,
+                             _TOOLS_BLOCK, _context_hint)
 from carrot.context import ConversationContext
 from carrot.drives import DriveState, DriveStore
 from carrot.environment import (EnvironmentSnapshot, MockEnvironmentProbe,
                                 RawObservation)
 from carrot.memory import Memory
+from carrot.relationship import RelationshipState, RelationshipStore
 from carrot.personality import Personality
 from carrot.tools import ToolRequest, ToolsConfig, decide
 
@@ -1162,6 +1164,100 @@ def test_fusion_skeleton_clean_with_adversarial_memories():
     c.process_turn("hello there")
     assert c.last_boost_effect is True
     assert _FUSION_SENTENCE in c.llm.last_system
+    assert '"my birthday is May 3"' in c.llm.last_system  # recalled
+    skeleton = _skeleton(c.llm.last_system)
+    assert re.search(r"\d", skeleton) is None
+    lowered = skeleton.lower()
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+# --- Slice 11 Phase 5: relationship sentence tests ---
+
+
+def _high_band_carrot(tmp_path, closeness, memories=()):
+    store = RelationshipStore(tmp_path / "rel.json")
+    store.save(RelationshipState(trust=0.5, closeness=closeness,
+                                 updated_ts={}))
+    c = make_carrot(relationship_store=store)
+    c.environment_probe = MockEnvironmentProbe(
+        [RawObservation("chrome.exe", False)])
+    for text, created in memories:
+        c.memory_store.add(Memory(text=text, kind="fact", importance=0.5,
+                                  created_ts=created,
+                                  last_recalled_ts=1_000_000.0))
+    return c
+
+
+def test_relationship_sentence_static_and_clean():
+    assert _RELATIONSHIP_HIGH_SENTENCE == \
+        "There's an easy familiarity here."
+    assert re.search(r"\d", _RELATIONSHIP_HIGH_SENTENCE) is None
+    assert '"' not in _RELATIONSHIP_HIGH_SENTENCE
+    lowered = _RELATIONSHIP_HIGH_SENTENCE.lower()
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_relationship_last_after_fusion():
+    ctx = ConversationContext(playful_frame=True, recent_harshness=True,
+                              recent_topics=("gardening",))
+    env = EnvironmentSnapshot(app_noun="browser", idle=True)
+    hint = _context_hint(ctx, "I'm kidding.", drive_pull="social",
+                         environment=env, boost_effect=True,
+                         relationship_band="high")
+    idx_fusion = hint.index(_FUSION_SENTENCE)
+    idx_rel = hint.index(_RELATIONSHIP_HIGH_SENTENCE)
+    assert idx_fusion < idx_rel
+    assert hint.endswith(_RELATIONSHIP_HIGH_SENTENCE)
+
+
+def test_relationship_only_part_renders_block():
+    hint = _context_hint(ConversationContext(), "12345 !!!",
+                         relationship_band="high")
+    assert hint == " Context: " + _RELATIONSHIP_HIGH_SENTENCE
+    # Omission preserved: any other band value renders nothing.
+    assert _context_hint(ConversationContext(), "12345 !!!",
+                         relationship_band=None) == ""
+    assert _context_hint(ConversationContext(), "12345 !!!",
+                         relationship_band="low") == ""
+
+
+def test_relationship_skeleton_clean_with_high_band(tmp_path):
+    c = _high_band_carrot(tmp_path, 0.69,
+                          [("i love pizza", 100.0),
+                           ("my browser tabs are many", 200.0)])
+    c.process_turn("i love you")
+    assert c.last_relationship_band == "high"
+    assert _RELATIONSHIP_HIGH_SENTENCE in c.llm.last_system
+    skeleton = _skeleton(c.llm.last_system)
+    assert re.search(r"\d", skeleton) is None
+    lowered = skeleton.lower()
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_relationship_skeleton_clean_adversarial(tmp_path):
+    # Digits ("May 3") and a state name ("anger") ride inside quoted
+    # memory spans while boost AND the high band both fire; the skeleton
+    # strips user content and both static sentences carry no data.
+    # Closeness is pre-written at exactly 0.70 so the neutral turn keeps
+    # the band high without disturbing recall scores.
+    c = _high_band_carrot(tmp_path, 0.70,
+                          [("my birthday is May 3", 100.0),
+                           ("my anger issues", 200.0),
+                           ("my browser tabs are many", 300.0)])
+    c.process_turn("hello there")
+    assert c.last_boost_effect is True
+    assert c.last_relationship_band == "high"
+    assert _FUSION_SENTENCE in c.llm.last_system
+    assert _RELATIONSHIP_HIGH_SENTENCE in c.llm.last_system
     assert '"my birthday is May 3"' in c.llm.last_system  # recalled
     skeleton = _skeleton(c.llm.last_system)
     assert re.search(r"\d", skeleton) is None

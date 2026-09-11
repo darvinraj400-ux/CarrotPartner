@@ -69,6 +69,10 @@ _DRIVE_PULL_SENTENCES = {
 # Fires only when the environment boost changed the recall top-k.
 _FUSION_SENTENCE = "Something here connects to what you've told me before."
 
+# Slice 11 relationship sentence: static, no interpolation, no parameters.
+# Fires only when the closeness band is "high" (closeness >= 0.7).
+_RELATIONSHIP_HIGH_SENTENCE = "There's an easy familiarity here."
+
 # Mirrors cli.py: StateStore lives at <project>/state/state.json, so the
 # default memory file lives next to it. Tests and callers pass an
 # explicit store instead.
@@ -114,7 +118,8 @@ def _memories_block(recalled) -> str:
 
 def _context_hint(context: ConversationContext, user_text: str,
                    drive_pull=None, environment=None,
-                   boost_effect: bool = False) -> str:
+                   boost_effect: bool = False,
+                   relationship_band: str | None = None) -> str:
     lowered = str(user_text or "").strip().lower()
     answered = (bool(lowered) and not lowered.endswith("?")
                 and not _has_cue(lowered, _REPAIR_CUES)
@@ -139,6 +144,8 @@ def _context_hint(context: ConversationContext, user_text: str,
             parts.append("They've been away for a bit.")
     if boost_effect:
         parts.append(_FUSION_SENTENCE)
+    if relationship_band == "high":
+        parts.append(_RELATIONSHIP_HIGH_SENTENCE)
     if not parts:
         return ""
     return " Context: " + " ".join(parts)
@@ -239,7 +246,8 @@ class Carrot:
                          user_text: str,
                          recalled=(), drive_pull=None,
                          environment=EMPTY_SNAPSHOT,
-                         boost_effect: bool = False) -> str:
+                         boost_effect: bool = False,
+                         relationship_band: str | None = None) -> str:
         degree = _BAND_WORDS.get(behavior.band, "a little")
         base = (
             f"{self.personality.sketch()} "
@@ -253,7 +261,8 @@ class Carrot:
         memories = _memories_block(recalled)
         context_hint = _context_hint(context, user_text, drive_pull,
                                       environment,
-                                      boost_effect=boost_effect)
+                                      boost_effect=boost_effect,
+                                      relationship_band=relationship_band)
         return base + tools + memories + context_hint
 
     @staticmethod
@@ -383,7 +392,9 @@ class Carrot:
         system = self._system_prompt(behavior, ctx, str(text), recalled,
                                      drive_pull=self.last_drive_pull,
                                      environment=self.last_environment,
-                                     boost_effect=self.last_boost_effect)
+                                     boost_effect=self.last_boost_effect,
+                                     relationship_band=(
+                                         self.last_relationship_band))
         history = self.buffer.history_for_llm()
         user_str = str(text)
         reply = self.llm.generate(system=system, history=history,
