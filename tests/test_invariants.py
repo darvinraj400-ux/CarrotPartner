@@ -10,7 +10,8 @@ import pytest
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
 from carrot.carrot import (_FUSION_SENTENCE, _RELATIONSHIP_HIGH_SENTENCE,
-                             _TOOLS_BLOCK, _context_hint, _episodes_block)
+                             _TOOLS_BLOCK, _VOICE_BLOCK, _context_hint,
+                             _episodes_block)
 from carrot.behavior import Behavior
 from carrot.context import ConversationContext
 from carrot.drives import DriveState, DriveStore
@@ -1871,3 +1872,59 @@ def test_process_turn_renders_prior_episode():
     c.clock.advance(3600.0)
     c.process_turn("talking about gardening")
     assert " Previously: talking, gardening, soil" in c.llm.last_system
+
+
+# --- Voice Layer Phase 1: voice guidance contract ---
+
+
+def test_voice_block_nonempty_static():
+    assert isinstance(_VOICE_BLOCK, str) and _VOICE_BLOCK
+    assert '"' not in _VOICE_BLOCK
+
+
+def test_voice_block_no_digits():
+    assert re.search(r"\d", _VOICE_BLOCK) is None
+
+
+def test_voice_block_no_state_nouns():
+    lowered = _VOICE_BLOCK.lower()
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_voice_block_no_banned_words():
+    lowered = _VOICE_BLOCK.lower()
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def _voice_system(*lines):
+    c = make_carrot()
+    for line in lines:
+        c.process_turn(line)
+    return c.llm.last_system
+
+
+def test_voice_block_present_all_turns():
+    for lines in (["hello there"], ["You're cute, thanks!"],
+                  ["gardening club playoff", "tell me more"]):
+        system = _voice_system(*lines)
+        assert _VOICE_BLOCK in system, lines
+
+
+def test_voice_block_position():
+    system = _voice_system("hello there")
+    sketch = make_carrot().personality.sketch()
+    assert system.index(sketch) < system.index(_VOICE_BLOCK)
+    assert system.index(_VOICE_BLOCK) < system.index(_TOOLS_BLOCK)
+
+
+def test_voice_block_skeleton_clean():
+    system = _voice_system("hello there")
+    skeleton = _skeleton(system)
+    assert re.search(r"\d", skeleton) is None
+    lowered = skeleton.lower()
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word

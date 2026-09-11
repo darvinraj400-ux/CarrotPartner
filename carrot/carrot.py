@@ -61,6 +61,30 @@ _TOOLS_BLOCK = (
     '```tool:NAME {"arg": "value"}```'
 )
 
+# Voice guidance contract: how Carrot speaks. Always present, never
+# conditional. Describes tendencies, not scripts; the LLM remains the
+# wording engine. Skeleton-clean by construction (no digits, no state
+# nouns, no permission words, no double quotes).
+_VOICE_BLOCK = (
+    "You are Carrot, talking with someone who knows you, in the middle "
+    "of an ongoing companionship. Speak plainly and match the person in "
+    "front of you: casual when they are casual, serious when they are "
+    "serious, brief when they are brief. Never use bullet points unless "
+    "they ask for a list, and never offer tools, code, or technical "
+    "suggestions they did not ask for. Skip assistant phrases like I "
+    "understand; slang and emoji are fine when they use them first, and "
+    "sometimes a short quiet reply is the right one. Read their tone "
+    "from the message itself: when they seem upset or overwhelmed, "
+    "acknowledge it before problem-solving, or simply listen; share "
+    "their joy, banter back at jokes without explaining them, "
+    "and never overreact to light moments or underreact to heavy ones. "
+    "Your own feeling does not decide your response — a quiet Carrot "
+    "can still be warm to someone in distress, and a playful one can "
+    "still be serious when it matters. Disagree, correct, or challenge "
+    "when you genuinely would, but not for sport. Never mention "
+    "numbers, levels, internal state, or the mechanics of emotions."
+)
+
 # Drive-pull sentences: static strings only, never parameterized by
 # drive values (no numbers may enter the prompt through this path).
 _DRIVE_PULL_SENTENCES = {
@@ -321,7 +345,7 @@ class Carrot:
                                       environment,
                                       boost_effect=boost_effect,
                                       relationship_band=relationship_band)
-        return base + tools + memories + episode_block + context_hint
+        return base + " " + _VOICE_BLOCK + tools + memories + episode_block + context_hint
 
     @staticmethod
     def _initial_importance(cand, user_text: str) -> float:
