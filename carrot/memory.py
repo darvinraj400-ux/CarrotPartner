@@ -189,7 +189,8 @@ class MemoryStore:
                            now: float,
                            k: int = RECALL_K,
                            *,
-                           boost_text: str = "") -> tuple:
+                           boost_text: str = "",
+                           boost_weight: float = 1.0) -> tuple:
         """Decay, persist, recall top-k twice, refresh, return pair.
 
         Returns (boosted_recall, boost_changed_topk).
@@ -201,7 +202,7 @@ class MemoryStore:
         decayed = decay_all(self.load(), now)
         self.save(decayed)
         boosted = recall(decayed, current_user_text, recent_topics, k=k,
-                         boost_text=boost_text)
+                         boost_text=boost_text, boost_weight=boost_weight)
         unboosted = recall(decayed, current_user_text, recent_topics, k=k,
                            boost_text="")
         boost_changed = boosted != unboosted
@@ -226,21 +227,23 @@ def recall(memories: Sequence, current_user_text: str,
            recent_topics: Sequence = (),
            k: int = RECALL_K,
            *,
-           boost_text: str = "") -> tuple:
+           boost_text: str = "",
+           boost_weight: float = 1.0) -> tuple:
     """Rank memories by turn-overlap, topic-overlap, boost, importance."""
     items = list(memories or ())
     if not items or k is None or int(k) <= 0:
         return ()
     topics_text = " ".join(str(t) for t in (recent_topics or ()))
+    weight = float(boost_weight)
     scored = []
     for memory in items:
-        # Slice 10: boost_text carries context-derived tokens (currently the
-        # environment app noun). Weight = 1, parity with the topics term.
-        # Hardcoded per planner ruling R2; revisit only when a second boost
-        # source arrives (e.g. relationship weighting in Slice 11).
+        # Slice 11: boost_weight scales the environment-boost term by
+        # closeness (0.5 + closeness). Default 1.0 preserves Slice 10
+        # behavior exactly. Slice 10 golden baseline + all boost tests
+        # must pass unmodified.
         score = (2 * overlap(memory.text, current_user_text)
                  + overlap(memory.text, topics_text)
-                 + overlap(memory.text, boost_text)
+                 + weight * overlap(memory.text, boost_text)
                  + float(memory.importance))
         scored.append((score, memory))
     scored.sort(key=lambda item: (-item[0], item[1].created_ts,

@@ -391,3 +391,90 @@ def test_recall_and_refresh_refreshes_only_boosted(tmp_path):
     assert by_text["my browser tabs"].last_recalled_ts == now
     assert by_text["i love pizza"].last_recalled_ts == now - 1000.0
     assert by_text["i love ramen"].last_recalled_ts == now - 1000.0
+
+
+# --- Slice 11 Phase 4: boost_weight tests ---
+
+
+def test_boost_weight_default_is_one():
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    assert recall(mems, "hello", (), boost_text="games") == \
+        recall(mems, "hello", (), boost_text="games", boost_weight=1.0)
+
+
+def test_boost_weight_is_keyword_only():
+    mems = [_mem("i love games")]
+    try:
+        recall(mems, "text", (), 3, "", 1.0)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("positional boost_weight did not raise")
+
+
+def test_boost_weight_scales_rank():
+    # A matches boost (imp 0.0); B imp 1.0 created earlier.
+    # w=1.0: tie 1.0/1.0 -> B first; w=2.0: A (2.0) outranks B.
+    mems = [_mem("i love games", importance=0.0, created=200.0),
+            _mem("i love pizza", importance=1.0, created=100.0)]
+    light = recall(mems, "hello", (), boost_text="games",
+                   boost_weight=1.0)
+    heavy = recall(mems, "hello", (), boost_text="games",
+                   boost_weight=2.0)
+    assert [m.text for m in light] == ["i love pizza", "i love games"]
+    assert [m.text for m in heavy] == ["i love games", "i love pizza"]
+
+
+def test_boost_weight_zero_matches_empty_boost():
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    assert recall(mems, "hello", (), boost_text="games",
+                  boost_weight=0.0) == \
+        recall(mems, "hello", (), boost_text="")
+
+
+def test_boost_weight_ignores_non_matching():
+    mems = [_mem("i love pizza", created=100.0),
+            _mem("i love ramen", created=200.0)]
+    assert recall(mems, "hello", (), boost_text="games",
+                  boost_weight=0.5) == \
+        recall(mems, "hello", (), boost_text="games", boost_weight=2.0)
+
+
+def test_boost_weight_negative_is_linear():
+    # No clamp inside recall: contribution is weight * overlap, even
+    # negative. The orchestrator never sends a negative weight
+    # (0.5 + closeness >= 0.5); this pins the well-defined shape.
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    got = recall(mems, "hello", (), boost_text="games",
+                 boost_weight=-1.0)
+    assert [m.text for m in got] == ["i love pizza", "i love games"]
+
+
+def test_recall_and_refresh_forwards_boost_weight(tmp_path):
+    store = MemoryStore(tmp_path / "memories.json")
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    store.save(mems)
+    got, _ = store.recall_and_refresh("hello", (), 1000.0,
+                                      boost_text="games",
+                                      boost_weight=2.0)
+    expected = recall(mems, "hello", (), boost_text="games",
+                      boost_weight=2.0)
+    assert [m.text for m in got] == [m.text for m in expected]
+
+
+def test_recall_and_refresh_default_weight_preserved(tmp_path):
+    store = MemoryStore(tmp_path / "memories.json")
+    mems = [_mem("i love games", created=200.0),
+            _mem("i love pizza", created=100.0)]
+    store.save(mems)
+    assert [m.text for m in
+            store.recall_and_refresh("hello", (), 1000.0,
+                                     boost_text="games")[0]] == \
+        [m.text for m in
+         store.recall_and_refresh("hello", (), 1000.0,
+                                  boost_text="games",
+                                  boost_weight=1.0)[0]]

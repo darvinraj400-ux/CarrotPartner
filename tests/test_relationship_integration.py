@@ -1,6 +1,8 @@
 """Slice 11 Phase-3 tests: Carrot relationship wiring, step 4c, bands."""
 import pytest
 
+from carrot.environment import MockEnvironmentProbe, RawObservation
+from carrot.memory import Memory, MemoryStore
 from carrot.relationship import (
     RelationshipConfig,
     RelationshipState,
@@ -220,3 +222,87 @@ def test_relationship_deterministic(tmp_path):
     second.process_turn("You're cute, thanks!")
     assert (first.last_relationship.to_dict()
             == second.last_relationship.to_dict())
+
+
+# --- Slice 11 Phase 4: step 5b closeness scaling ---
+
+
+def _boost_mem_store(tmp_path, name, pizza_imp, browser_imp):
+    store = MemoryStore(tmp_path / name)
+    store.save([Memory(text="i love pizza", kind="fact",
+                       importance=pizza_imp, created_ts=100.0,
+                       last_recalled_ts=1_000_000.0),
+                Memory(text="my browser tabs", kind="fact",
+                       importance=browser_imp, created_ts=200.0,
+                       last_recalled_ts=1_000_000.0)])
+    return store
+
+
+def _boost_carrot(tmp_path, mem_name, closeness):
+    rel = RelationshipStore(tmp_path / ("rel-" + mem_name))
+    rel.save(RelationshipState(trust=0.5, closeness=closeness,
+                               updated_ts={}))
+    c = make_carrot(relationship_store=rel)
+    c.environment_probe = MockEnvironmentProbe(
+        [RawObservation("chrome.exe", False)])
+    return c
+
+
+def test_default_closeness_weight_one_chain():
+    # Fresh carrot: closeness 0.5 -> weight 1.0, the Slice 10 formula.
+    c = make_carrot()
+    c.environment_probe = MockEnvironmentProbe(
+        [RawObservation("chrome.exe", False)])
+    for text in ("i love pizza", "my browser tabs are many"):
+        c.memory_store.add(Memory(text=text, kind="fact", importance=0.5,
+                                  created_ts=100.0 if "pizza" in text
+                                  else 200.0,
+                                  last_recalled_ts=1_000_000.0))
+    c.process_turn("hello there")
+    assert c.last_boost_effect is True
+    assert [m.text for m in c.last_recalled] == \
+        ["my browser tabs are many", "i love pizza"]
+    from carrot.carrot import _FUSION_SENTENCE
+    assert _FUSION_SENTENCE in c.llm.last_system
+
+
+def test_high_closeness_strengthens_boost(tmp_path):
+    # A imp 1.0 vs B imp 0.0 + boost: w=1.0 ties -> created order
+    # (unchanged); w=1.4 (closeness 0.9) flips the top-k.
+    mem = _boost_mem_store(tmp_path, "m.json", 1.0, 0.0)
+    default = _boost_carrot(tmp_path, "d.json", 0.5)
+    default.memory_store = mem
+    high = _boost_carrot(tmp_path, "h.json", 0.9)
+    high.memory_store = MemoryStore(tmp_path / "m.json")
+    default.process_turn("hello there")
+    high.process_turn("hello there")
+    assert default.last_boost_effect is False
+    assert high.last_boost_effect is True
+    assert [m.text for m in high.last_recalled][0] == "my browser tabs"
+
+
+def test_low_closeness_weakens_boost(tmp_path):
+    # A imp 0.9 vs B imp 0.0 + boost: w=1.0 flips (1.0 > 0.9);
+    # w=0.6 (closeness 0.1) does not (0.6 < 0.9).
+    mem = _boost_mem_store(tmp_path, "m.json", 0.9, 0.0)
+    default = _boost_carrot(tmp_path, "d.json", 0.5)
+    default.memory_store = mem
+    low = _boost_carrot(tmp_path, "l.json", 0.1)
+    low.memory_store = MemoryStore(tmp_path / "m.json")
+    default.process_turn("hello there")
+    low.process_turn("hello there")
+    assert default.last_boost_effect is True
+    assert low.last_boost_effect is False
+
+
+def test_boost_scaling_deterministic(tmp_path):
+    first = _boost_carrot(tmp_path, "a.json", 0.9)
+    second = _boost_carrot(tmp_path, "b.json", 0.9)
+    mem = _boost_mem_store(tmp_path, "m.json", 1.0, 0.0)
+    first.memory_store = mem
+    second.memory_store = MemoryStore(tmp_path / "m.json")
+    first.process_turn("hello there")
+    second.process_turn("hello there")
+    assert [m.text for m in first.last_recalled] == \
+        [m.text for m in second.last_recalled]
+    assert first.llm.last_system == second.llm.last_system

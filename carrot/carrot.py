@@ -363,11 +363,13 @@ class Carrot:
         # Boosted by the live environment app noun; the flag records
         # whether the boost changed the top-k (consumed in Phase 3).
         boost_text = self.last_environment.app_noun or ""
+        boost_weight = 0.5 + self.last_relationship.closeness
         recalled, boost_effect = self.memory_store.recall_and_refresh(
             current_user_text=str(text),
             recent_topics=ctx.recent_topics,
             now=self._now(),
-            boost_text=boost_text)
+            boost_text=boost_text,
+            boost_weight=boost_weight)
         self.last_recalled = recalled
         self.last_boost_effect = boost_effect
         # 5c. Extract candidate facts from the live turn only.
