@@ -33,6 +33,12 @@ from .environment import (
 from .initiative import InitiativeConfig, InitiativeStore
 from .memory import DeterministicExtractor, Memory, MemoryStore
 from .permissions import PermissionState, PermissionStore
+from .relationship import (
+    RelationshipConfig,
+    RelationshipState,
+    RelationshipStore,
+    apply_event,
+)
 from .tools import (
     ToolCall,
     ToolsConfig,
@@ -81,6 +87,10 @@ _DEFAULT_INITIATIVE_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "initiative.json")
 _DEFAULT_INITIATIVE_STORE_PATH = (
     Path(__file__).resolve().parents[1] / "state" / "initiative.json")
+_DEFAULT_RELATIONSHIP_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "relationship.json")
+_DEFAULT_RELATIONSHIP_STORE_PATH = (
+    Path(__file__).resolve().parents[1] / "state" / "relationship.json")
 
 
 def _has_cue(lowered_text: str, cues) -> bool:
@@ -151,6 +161,7 @@ class Carrot:
                  environment_probe=None, environment_config=None,
                  tools_config=None, permission_store=None,
                  initiative_config=None, initiative_store=None,
+                 relationship_config=None, relationship_store=None,
                  time_fn=None):
         self.state = state
         self.personality = personality
@@ -203,6 +214,18 @@ class Carrot:
         if initiative_store is None:
             initiative_store = InitiativeStore(_DEFAULT_INITIATIVE_STORE_PATH)
         self.initiative_store = initiative_store
+        if relationship_config is None:
+            # Config is required: a missing file is a hard error here.
+            relationship_config = RelationshipConfig.load(
+                _DEFAULT_RELATIONSHIP_CONFIG_PATH)
+        self.relationship_config = relationship_config
+        if relationship_store is None:
+            relationship_store = RelationshipStore(
+                _DEFAULT_RELATIONSHIP_STORE_PATH)
+        self.relationship_store = relationship_store
+        self.last_relationship: RelationshipState = \
+            self.relationship_store.load()
+        self.last_relationship_band: str | None = None
         self.last_behavior: Behavior = Behavior("normal", "low")
         self.last_event: InteractionEvent | None = None
         self.last_context = None
@@ -313,6 +336,21 @@ class Carrot:
             self.drives_config.event_satisfaction,
         )
         self.drive_store.save(drives)
+
+        # 4c. Evolve relationship state from the classified event.
+        updated_relationship = apply_event(
+            self.last_relationship,
+            event.type,
+            event.intensity,
+            now,
+            self.relationship_config,
+        )
+        if updated_relationship is not self.last_relationship:
+            self.relationship_store.save(updated_relationship)
+            self.last_relationship = updated_relationship
+        self.last_relationship_band = (
+            "high" if self.last_relationship.closeness >= 0.7 else None
+        )
 
         # 5. Derived mood + behavior (read-only over state).
         self.state.set_mood(mood_mod.derive(self.state.emotions,
