@@ -325,11 +325,37 @@ def test_store_type_check_on_save(tmp_path):
 def test_store_size_cap(tmp_path, monkeypatch):
     import carrot.episodes as ep
 
-    assert ep.MAX_FILE_BYTES == 4096
+    assert ep.MAX_FILE_BYTES == 16384
     monkeypatch.setattr(ep, "MAX_FILE_BYTES", 10)
     with pytest.raises(ValueError):
         _store(tmp_path).save((_ep(),))
     assert not (tmp_path / "episodes.json").exists()
+
+
+def test_store_byte_cap_value_pinned():
+    import carrot.episodes as ep
+
+    # Deliberate: 50 full records serialize to ~8.5 KB, so the byte cap
+    # must stay above that for the count cap to remain binding. Any
+    # change here reopens the Phase 1 sizing question.
+    assert ep.MAX_FILE_BYTES == 16384
+
+
+def test_store_full_count_round_trip(tmp_path):
+    store = _store(tmp_path)
+    moods = ("content", "bright", "low", "tense", "tender")
+    originals = tuple(
+        _ep(first_seen_ts=float(1000 + i * 100),
+            last_seen_ts=float(1100 + i * 100),
+            turn_count=(i % 7) + 1,
+            topic_tokens=(f"topic{i}a", f"topic{i}b"),
+            mood_label=moods[i % len(moods)],
+            last_behavior="normal" if i % 2 == 0 else None)
+        for i in range(MAX_EPISODES))
+    assert len(originals) == 50
+    store.save(originals)
+    assert (tmp_path / "episodes.json").is_file()
+    assert store.load() == originals
 
 
 def test_store_add_under_cap(tmp_path):
@@ -338,13 +364,7 @@ def test_store_add_under_cap(tmp_path):
     assert store.load() == (_ep(),)
 
 
-def test_store_add_at_cap(tmp_path, monkeypatch):
-    import carrot.episodes as ep
-
-    # Setup only: 50 full records exceed the 4 KB byte cap, so widen it
-    # to stage a full store. The count-cap path under test returns
-    # before any save (and its byte check) is reached.
-    monkeypatch.setattr(ep, "MAX_FILE_BYTES", 10 ** 6)
+def test_store_add_at_cap(tmp_path):
     store = _store(tmp_path)
     store.save(tuple(_ep() for _ in range(MAX_EPISODES)))
     mtime = (tmp_path / "episodes.json").stat().st_mtime_ns

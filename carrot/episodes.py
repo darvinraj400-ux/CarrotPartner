@@ -27,7 +27,12 @@ from .mood import MOODS
 
 EPISODE_SCHEMA_VERSION = 1
 MAX_EPISODES = 50
-MAX_FILE_BYTES = 4096
+# 16 KB: episodes are a bounded list of small records. 50 full records
+# serialize to ~8.5 KB, so 4 KB (the sibling-store convention for
+# tiny-record stores) would bind before the count cap. 16 KB matches
+# the figure declared in memory.py and leaves comfortable margin while
+# keeping the count cap (MAX_EPISODES) as the intended binding limit.
+MAX_FILE_BYTES = 16384
 MAX_TOPIC_TOKENS = 10
 JOIN_WINDOW_S = 1800.0
 
