@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from carrot.cli import format_companions
 from carrot.companion import (
     DEFAULT_COMPANION,
     Companion,
@@ -386,3 +387,64 @@ def test_companions_share_global_permissions(tmp_path):
     expected = tmp_path / "state" / "permissions.json"
     assert first.permission_store.path == expected
     assert second.permission_store.path == expected
+
+
+# --- Slice 16 Phase 3: format_companions tests ---
+
+
+def _stage_social_root(tmp_path):
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config" / "personality.json").write_text(
+        json.dumps({"id": "carrot-default-v1"}), encoding="utf-8")
+
+
+def test_format_default_only(tmp_path):
+    _stage_social_root(tmp_path)
+    assert format_companions(tmp_path) == \
+        "carrot: personality=carrot-default-v1 state=state/"
+
+
+def test_format_named_companions(tmp_path):
+    _stage_social_root(tmp_path)
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True)
+    (companions / "ada.json").write_text(json.dumps({"id": "ada-v1"}),
+                                         encoding="utf-8")
+    assert format_companions(tmp_path) == \
+        ("carrot: personality=carrot-default-v1 state=state/\n"
+         "ada: personality=ada-v1 state=state/ada/")
+
+
+def test_format_pending_count_shown(tmp_path):
+    _stage_social_root(tmp_path)
+    companions = tmp_path / "config" / "companions"
+    companions.mkdir(parents=True)
+    (companions / "ada.json").write_text(json.dumps({"id": "ada-v1"}),
+                                         encoding="utf-8")
+    inbox = tmp_path / "state" / "ada" / "social" / "instagram" / "inbox"
+    inbox.mkdir(parents=True)
+    (inbox / "000001-aa.msg").write_text("hi", encoding="utf-8")
+    lines = format_companions(tmp_path).splitlines()
+    assert lines[1] == \
+        "ada: personality=ada-v1 state=state/ada/ pending=1"
+
+
+def test_format_no_pending_when_zero(tmp_path):
+    _stage_social_root(tmp_path)
+    assert "pending=" not in format_companions(tmp_path)
+
+
+def test_format_deterministic(tmp_path):
+    _stage_social_root(tmp_path)
+    assert format_companions(tmp_path) == format_companions(tmp_path)
+
+
+def test_format_non_mutating(tmp_path):
+    _stage_social_root(tmp_path)
+    inbox = tmp_path / "state" / "ada" / "social" / "instagram" / "inbox"
+    inbox.mkdir(parents=True)
+    target = inbox / "000001-aa.msg"
+    target.write_text("hi", encoding="utf-8")
+    before = (target.stat().st_mtime_ns, target.read_bytes())
+    format_companions(tmp_path)
+    assert (target.stat().st_mtime_ns, target.read_bytes()) == before

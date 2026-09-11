@@ -187,6 +187,7 @@ def make_companion(
         initiative_store=initiative_store,
         relationship_store=relationship_store,
         time_fn=clock,
+        companion=name,
     )
     llm._behavior_getter = lambda: carrot.last_behavior
     carrot.clock = clock

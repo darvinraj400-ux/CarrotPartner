@@ -1691,3 +1691,180 @@ def test_social_away_mutually_exclusive(monkeypatch, capsys):
 
 def test_help_lists_social():
     assert "/social" in HELP_TEXT
+
+
+# --- Slice 16 Phase 3: --companion + cross-companion tests ---
+
+
+def test_parse_companion_args():
+    from carrot.cli import _parse_companion_args
+
+    assert _parse_companion_args([]) == (False, None)
+    assert _parse_companion_args(["--companion", "ada"]) == (True, "ada")
+    assert _parse_companion_args(["--companion"]) == (True, None)
+
+
+def test_companion_flag_missing_arg(monkeypatch, capsys):
+    from carrot.cli import main
+
+    main(["--companion"])
+    assert "usage: --companion <name>" in capsys.readouterr().out
+
+
+def test_companion_flag_invalid_name(monkeypatch, capsys):
+    called = []
+    monkeypatch.setattr("carrot.cli.build_carrot",
+                        lambda **kw: called.append(kw))
+    from carrot.cli import main
+
+    main(["--companion", "Ada"])
+    assert "unknown companion: Ada" in capsys.readouterr().out
+    assert called == []
+
+
+def test_companion_flag_unknown_no_config(monkeypatch, capsys):
+    called = []
+    monkeypatch.setattr("carrot.cli.build_carrot",
+                        lambda **kw: called.append(kw))
+    from carrot.cli import main
+
+    main(["--companion", "ada"])
+    assert "unknown companion: ada" in capsys.readouterr().out
+    assert called == []
+
+
+def _run_argv(monkeypatch, argv):
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda *a, **k: (_ for _ in ()).throw(EOFError))
+    from carrot.cli import main
+
+    main(argv)
+
+
+def test_companion_flag_builds_named(monkeypatch, tmp_path):
+    (tmp_path / "config" / "companions").mkdir(parents=True)
+    (tmp_path / "config" / "companions" / "ada.json").write_text(
+        '{"id": "ada-v1"}', encoding="utf-8")
+    monkeypatch.setattr("carrot.cli.ROOT", tmp_path)
+    calls = []
+
+    def fake_build(**kwargs):
+        calls.append(kwargs)
+        return make_carrot()
+
+    monkeypatch.setattr("carrot.cli.build_carrot", fake_build)
+    _run_argv(monkeypatch, ["--companion", "ada"])
+    assert calls == [{"companion": "ada"}]
+
+
+def test_companion_away_mutually_exclusive(monkeypatch, capsys):
+    called = []
+    monkeypatch.setattr("carrot.cli.build_carrot",
+                        lambda **kw: called.append(kw))
+    from carrot.cli import main
+
+    main(["--companion", "ada", "--away"])
+    out = capsys.readouterr().out
+    assert "usage: --away [N] | --drain <dir> | --social <platform> " \
+        "| --companion <name>" in out
+    assert called == []
+
+
+def test_companion_drain_mutually_exclusive(monkeypatch, capsys):
+    called = []
+    monkeypatch.setattr("carrot.cli.build_carrot",
+                        lambda **kw: called.append(kw))
+    from carrot.cli import main
+
+    main(["--companion", "ada", "--drain", "x"])
+    out = capsys.readouterr().out
+    assert "usage: --away [N] | --drain <dir> | --social <platform> " \
+        "| --companion <name>" in out
+    assert called == []
+
+
+def test_companion_social_mutually_exclusive(monkeypatch, capsys):
+    called = []
+    monkeypatch.setattr("carrot.cli.build_carrot",
+                        lambda **kw: called.append(kw))
+    from carrot.cli import main
+
+    main(["--companion", "ada", "--social", "instagram"])
+    out = capsys.readouterr().out
+    assert "usage: --away [N] | --drain <dir> | --social <platform> " \
+        "| --companion <name>" in out
+    assert called == []
+
+
+def _ada_repl(tmp_path, monkeypatch, lines):
+    import json
+
+    from tests.test_scenarios import make_companion
+
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config" / "social.json").write_text(
+        json.dumps({"platforms": {"instagram": {"handle": "",
+                                                "enabled": True,
+                                                "inbox_dir":
+                                                "state/social/instagram"}}}),
+        encoding="utf-8")
+    ada = make_companion("ada", tmp_path)
+    ada.store = StateStore(str(tmp_path / "state-ada.json"))
+    assert ada.companion == "ada"
+    monkeypatch.setattr("carrot.cli.ROOT", tmp_path)
+    _run_main_scripted(monkeypatch, lines, factory=lambda: ada)
+    return ada
+
+
+def test_social_uses_active_companion_dir(monkeypatch, capsys, tmp_path):
+    inbox = tmp_path / "state" / "ada" / "social" / "instagram" / "inbox"
+    inbox.mkdir(parents=True)
+    (inbox / "000001-aa.msg").write_text("hi", encoding="utf-8")
+    _ada_repl(tmp_path, monkeypatch, ["/social"])
+    assert "pending=1" in capsys.readouterr().out
+
+
+def test_drain_uses_active_companion_channel(monkeypatch, capsys, tmp_path):
+    inbox = tmp_path / "state" / "ada" / "channel" / "inbox"
+    inbox.mkdir(parents=True)
+    (inbox / "000001-aa.msg").write_text("hello", encoding="utf-8")
+    _ada_repl(tmp_path, monkeypatch, ["/drain"])
+    out = capsys.readouterr().out
+    assert "drained: 1" in out
+    assert len(list((tmp_path / "state" / "ada" / "channel" / "outbox")
+                    .glob("*.msg"))) == 1
+    assert not (tmp_path / "state" / "channel").exists()
+
+
+def test_avatar_uses_active_companion_state(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr("carrot.cli.launch_avatar",
+                        lambda p: calls.append(p) or "ok")
+    _ada_repl(tmp_path, monkeypatch, ["/avatar"])
+    assert calls == [tmp_path / "state" / "ada" / "state.json"]
+
+
+def test_build_default_companion_attr(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    from carrot.cli import build_carrot
+
+    assert build_carrot().companion == "carrot"
+
+
+def test_build_named_companion_attr(tmp_path, monkeypatch):
+    _staged_root(tmp_path, monkeypatch)
+    (tmp_path / "config" / "companions").mkdir(exist_ok=True)
+    (tmp_path / "config" / "companions" / "ada.json").write_text(
+        '{"id": "ada-v1"}', encoding="utf-8")
+    from carrot.cli import build_carrot
+
+    assert build_carrot(companion="ada").companion == "ada"
+
+
+def test_make_carrot_companion_default():
+    assert make_carrot().companion == "carrot"
+
+
+def test_help_lists_companions():
+    assert "/companions" in HELP_TEXT

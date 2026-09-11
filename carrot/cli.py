@@ -13,7 +13,12 @@ from .channel import (
     FileChannel,
     MAX_DRAIN,
 )
-from .companion import DEFAULT_COMPANION, companion_paths
+from .companion import (
+    DEFAULT_COMPANION,
+    companion_paths,
+    list_companions,
+    validate_name,
+)
 from .drives import drive_pull, update_rise
 from .environment import MockEnvironmentProbe
 from .initiative import ACTIVE_REASONS, should_initiate
@@ -50,7 +55,8 @@ HELP_TEXT = ("  /dbg inner state (dev only) | /ctx context (dev only) | "
              "  /avatar open the desktop avatar (closes on window exit)\n"
              "  /voice one voice turn (mock recognizer/synth)\n"
              "  /drain process queued channel messages\n"
-             "  /social show social platform status")
+             "  /social show social platform status\n"
+             "  /companions list all known companions")
 NO_CONTEXT_YET = "(no context yet)"
 NO_MEMORIES_YET = "(no memories yet)"
 
@@ -262,6 +268,49 @@ def format_relationship(carrot) -> str:
                      for dim in DIMENSIONS)
 
 
+def format_companions(root: Path) -> str:
+    """Read-only view of all discoverable companions.
+
+    One line per companion, default first:
+        <name>: personality=<personality_id> state=<state_dir> [pending=<N>]
+    pending counts *.msg files under <state_dir>/social/*/inbox/,
+    omitted when 0 or absent. No mutation, no writes, no LLM calls.
+    """
+    base = Path(root)
+    lines = []
+    for companion in list_companions(base):
+        try:
+            rel = companion.state_dir.relative_to(base).as_posix() + "/"
+        except ValueError:
+            rel = str(companion.state_dir) + "/"
+        line = (f"{companion.name}: personality={companion.personality_id} "
+                f"state={rel}")
+        try:
+            pending = sum(
+                1 for p in (companion.state_dir / "social").glob(
+                    "*/inbox/*.msg") if p.is_file())
+        except OSError:
+            pending = 0
+        if pending:
+            line += f" pending={pending}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _for_companion(cfg, name: str):
+    """Return cfg with each platform's inbox_dir rewritten to the
+    companion's absolute social root. The global config is untouched;
+    default companion passes through unchanged."""
+    if name == DEFAULT_COMPANION:
+        return cfg
+    paths = companion_paths(ROOT, name)
+    return SocialConfig(platforms={
+        platform: {**dict(inner),
+                   "inbox_dir": str(paths["social_dir"] / platform)}
+        for platform, inner in cfg.platforms.items()
+    })
+
+
 def format_initiative(carrot) -> str:
     """Read-only initiative view: current decision + per-reason cooldowns."""
     now = carrot._now()
@@ -355,6 +404,7 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None,
         buffer=ConversationBuffer(),
         environment_probe=environment_probe,
         environment_config=environment_config,
+        companion=companion,
     )
     if isinstance(carrot.llm, MockLLM) and carrot.llm._behavior_getter is None:
         carrot.llm._behavior_getter = lambda: carrot.last_behavior
@@ -412,6 +462,17 @@ def _parse_social_args(argv: list[str]) -> tuple[bool, str | None]:
     if "--social" not in args:
         return (False, None)
     idx = args.index("--social")
+    if idx + 1 >= len(args):
+        return (True, None)
+    return (True, args[idx + 1])
+
+
+def _parse_companion_args(argv: list[str]) -> tuple[bool, str | None]:
+    """Returns (has_flag, name_or_None). None means flag absent or arg missing."""
+    args = list(argv or [])
+    if "--companion" not in args:
+        return (False, None)
+    idx = args.index("--companion")
     if idx + 1 >= len(args):
         return (True, None)
     return (True, args[idx + 1])
@@ -515,10 +576,27 @@ def main(argv=None) -> None:
     away, max_n = _parse_away_args(args)
     has_drain, drain_dir = _parse_drain_args(args)
     has_social, social_platform = _parse_social_args(args)
-    if sum((away, has_drain, has_social)) > 1:
-        print("usage: --away [N] | --drain <dir> | --social <platform>")
+    has_companion, companion_name = _parse_companion_args(args)
+    if sum((away, has_drain, has_social, has_companion)) > 1:
+        print("usage: --away [N] | --drain <dir> | --social <platform> "
+              "| --companion <name>")
         return
-    carrot = build_carrot()
+    if has_companion:
+        if companion_name is None:
+            print("usage: --companion <name>")
+            return
+        try:
+            validate_name(companion_name)
+        except ValueError:
+            print(f"unknown companion: {companion_name}")
+            return
+        known = {c.name for c in list_companions(ROOT)}
+        if companion_name not in known:
+            print(f"unknown companion: {companion_name}")
+            return
+        carrot = build_carrot(companion=companion_name)
+    else:
+        carrot = build_carrot()
     if away:
         _run_away_mode(carrot, max_n)
         return
@@ -591,7 +669,8 @@ def main(argv=None) -> None:
             print(format_relationship(carrot))
             continue
         if line.strip() == "/avatar":
-            print(launch_avatar(_paths(ROOT)["state_json"]))
+            print(launch_avatar(
+                companion_paths(ROOT, carrot.companion)["state_json"]))
             continue
         if line.strip() == "/voice":
             recognizer = MockSpeechRecognizer()
@@ -606,7 +685,8 @@ def main(argv=None) -> None:
             carrot.store.save(carrot.state)
             continue
         if line.strip() == "/drain":
-            channel = FileChannel(_paths(ROOT)["channel_dir"])
+            channel = FileChannel(
+                companion_paths(ROOT, carrot.companion)["channel_dir"])
             count = drain_inbox(carrot, channel)
             if count == 0:
                 print(CHANNEL_EMPTY_MSG)
@@ -615,11 +695,16 @@ def main(argv=None) -> None:
             continue
         if line.strip() == "/social":
             try:
-                cfg = SocialConfig.load(_paths(ROOT)["social_config_json"])
+                cfg = SocialConfig.load(
+                    _paths(ROOT)["social_config_json"])
             except FileNotFoundError:
                 print("(no social config)")
                 continue
-            print(social_status(cfg, ROOT))
+            print(social_status(_for_companion(cfg, carrot.companion),
+                                ROOT))
+            continue
+        if line.strip() == "/companions":
+            print(format_companions(ROOT))
             continue
         if line.strip() == "/initiative":
             print(format_initiative(carrot))

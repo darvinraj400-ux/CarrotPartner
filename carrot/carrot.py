@@ -30,6 +30,7 @@ from .environment import (
     MockEnvironmentProbe,
     map_observation,
 )
+from .companion import DEFAULT_COMPANION
 from .initiative import InitiativeConfig, InitiativeStore
 from .memory import DeterministicExtractor, Memory, MemoryStore
 from .permissions import PermissionState, PermissionStore
@@ -169,7 +170,7 @@ class Carrot:
                  tools_config=None, permission_store=None,
                  initiative_config=None, initiative_store=None,
                  relationship_config=None, relationship_store=None,
-                 time_fn=None):
+                 time_fn=None, companion: str = DEFAULT_COMPANION):
         self.state = state
         self.personality = personality
         self.classifier = classifier
@@ -240,6 +241,9 @@ class Carrot:
             from .conversation import ConversationBuffer
             buffer = ConversationBuffer()
         self.buffer = buffer
+        # Informational only: names which companion this instance is.
+        # Used by the CLI to resolve per-companion paths; no behavior.
+        self.companion = str(companion or DEFAULT_COMPANION)
 
     def _system_prompt(self, behavior: Behavior,
                          context: ConversationContext,
