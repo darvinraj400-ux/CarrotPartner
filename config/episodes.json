@@ -1,0 +1,1 @@
+{"join_window_s": 1800.0, "max_episodes": 50, "max_topic_tokens": 10, "retrieval_min_overlap": 2, "recall_k": 1}
