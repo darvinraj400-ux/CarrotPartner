@@ -1388,3 +1388,67 @@ def test_avatar_degrade_message_pinned():
     if msg is None:
         pytest.skip("constant lands in Phase 2")
     assert msg == "(avatar unavailable: no display)"
+
+
+# --- Slice 13 Phase 0: voice boundary pins ---
+
+
+def test_voice_module_boundaries():
+    # Slice 13 boundary: voice.py holds the channel protocols and mocks
+    # only. The orchestrator/CLI/LLM are all off limits. No subprocess —
+    # Option A never shells out; if a future slice sanctions a real TTS
+    # backend, that lands in a separate voice_*.py with its own
+    # planner-visible pin.
+    path = ROOT / "carrot" / "voice.py"
+    if not path.exists():
+        pytest.skip("voice.py lands in Phase 1")
+    banned_mods = {"carrot", "cli", "llm"}
+    banned_calls = {"process_turn", "generate"}
+    offenders = []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if parts[0] in banned_mods or (parts[0] == "carrot"
+                                               and len(parts) > 1):
+                    offenders.append(a.name)
+                if parts[0] == "subprocess":
+                    offenders.append(a.name)
+        elif isinstance(node, ast.ImportFrom):
+            mod_name = node.module or ""
+            parts = mod_name.split(".")
+            if node.level == 0 and (parts[0] in banned_mods or (
+                    parts[0] == "carrot" and len(parts) > 1)):
+                offenders.append(mod_name)
+            elif node.level > 0:
+                if parts and parts[0] in banned_mods:
+                    offenders.append(mod_name)
+                else:
+                    for a in node.names:
+                        if a.name in banned_mods:
+                            offenders.append(a.name)
+            if node.level == 0 and parts[0] == "subprocess":
+                offenders.append(mod_name)
+        elif isinstance(node, ast.Call) \
+                and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in banned_calls:
+            offenders.append(node.func.attr)
+    assert offenders == []
+    mods = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            mods.add((node.module or "").split(".")[0])
+    allowed = set(sys.stdlib_module_names) | {"carrot"}
+    assert mods <= allowed, mods
+
+
+def test_voice_empty_msg_pinned():
+    """Slice 13: the empty-utterance message is contract, not accident."""
+    voice = pytest.importorskip("carrot.voice")
+    msg = getattr(voice, "VOICE_EMPTY_MSG", None)
+    if msg is None:
+        pytest.skip("constant lands in Phase 1")
+    assert msg == "(heard nothing)"
