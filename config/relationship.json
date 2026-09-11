@@ -1,0 +1,1 @@
+{"event_deltas": {"compliment": {"trust": 0.03, "closeness": 0.02}, "affection": {"trust": 0.05, "closeness": 0.06}, "apology": {"trust": 0.06}, "repair": {"trust": 0.05, "closeness": 0.02}, "insult": {"trust": -0.08, "closeness": -0.03}, "joke": {"closeness": 0.02}, "achievement": {"closeness": 0.03}, "return": {"closeness": 0.05}}}
