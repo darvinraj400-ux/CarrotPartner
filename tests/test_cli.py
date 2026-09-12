@@ -2140,3 +2140,156 @@ def test_session_start_no_process_turn(monkeypatch):
     _run_main_scripted(monkeypatch, ["/quit"], factory=lambda: c)
     assert calls == []
     assert list(c.buffer.recent()) == before_buffer
+
+
+# --- Initiative Phase 2: post-turn follow-up ---
+
+
+def _joke_event():
+    from carrot.classifier import InteractionEvent
+
+    return InteractionEvent("joke", 0.6, "humor cue")
+
+
+def _neutral_event():
+    from carrot.classifier import InteractionEvent
+
+    return InteractionEvent("neutral", 0.3, "no cue matched")
+
+
+def test_should_follow_up_non_neutral_event():
+    from carrot.cli import _should_follow_up
+
+    c, _clock = _away_carrot()
+    assert _should_follow_up(c, _joke_event(), "haha") is True
+
+
+def test_should_follow_up_question():
+    from carrot.cli import _should_follow_up
+
+    c, _clock = _away_carrot()
+    assert _should_follow_up(c, _neutral_event(),
+                             "what time is it?") is True
+
+
+def test_should_follow_up_long_text():
+    from carrot.cli import _should_follow_up
+
+    c, _clock = _away_carrot()
+    text = "I spent all morning debugging the deployment pipeline failure"
+    assert _should_follow_up(c, _neutral_event(), text) is True
+
+
+def test_should_follow_up_baseline_silent():
+    from carrot.cli import _should_follow_up
+
+    c, _clock = _away_carrot()
+    assert _should_follow_up(c, _neutral_event(),
+                             "ok sounds good") is False
+
+
+def test_attempt_follow_up_gate_false_no_llm():
+    from carrot.cli import _attempt_follow_up
+
+    c, _clock = _away_carrot()
+    before = c.llm._counter
+    assert _attempt_follow_up(c, _neutral_event(), "ok") is None
+    assert c.llm._counter == before
+
+
+def test_attempt_follow_up_returns_text():
+    from carrot.cli import _attempt_follow_up
+
+    c, _clock = _away_carrot()
+    c.llm.generate = (lambda *, system, history, user: "that's funny lol")
+    assert _attempt_follow_up(c, None, "what time is it?") == \
+        "that's funny lol"
+
+
+def test_attempt_follow_up_empty_none():
+    from carrot.cli import _attempt_follow_up
+
+    c, _clock = _away_carrot()
+    c.llm.generate = (lambda *, system, history, user: "   ")
+    assert _attempt_follow_up(c, None, "what time is it?") is None
+
+
+def test_attempt_follow_up_silence_none():
+    from carrot.cli import _attempt_follow_up
+
+    c, _clock = _away_carrot()
+    c.llm.generate = (lambda *, system, history, user: "  [silence]  ")
+    assert _attempt_follow_up(c, None, "what time is it?") is None
+
+
+def test_attempt_follow_up_llm_raises_none():
+    from carrot.cli import _attempt_follow_up
+
+    c, _clock = _away_carrot()
+
+    def raising_generate(*, system, history, user):
+        raise RuntimeError("provider down")
+
+    c.llm.generate = raising_generate
+    assert _attempt_follow_up(c, None, "what time is it?") is None
+
+
+def test_attempt_follow_up_buffer_untouched():
+    from carrot.cli import _attempt_follow_up
+
+    c, _clock = _away_carrot()
+    c.llm.generate = (lambda *, system, history, user: "that's funny lol")
+    before = list(c.buffer.recent())
+    _attempt_follow_up(c, None, "what time is it?")
+    assert list(c.buffer.recent()) == before
+
+
+def test_try_post_turn_follow_up_prefix(capsys):
+    from carrot.cli import _try_post_turn_follow_up
+
+    c, _clock = _away_carrot()
+    c.llm.generate = (lambda *, system, history, user: "that's funny lol")
+    _try_post_turn_follow_up(c, None, "what time is it?")
+    out = capsys.readouterr().out.strip().splitlines()
+    assert out == ["carrot: that's funny lol"]
+
+
+def test_try_post_turn_follow_up_silent_on_none(capsys):
+    from carrot.cli import _try_post_turn_follow_up
+
+    c, _clock = _away_carrot()
+    _try_post_turn_follow_up(c, _neutral_event(), "ok")
+    assert capsys.readouterr().out == ""
+
+
+def test_try_post_turn_follow_up_never_raises(capsys):
+    from carrot.cli import _try_post_turn_follow_up
+
+    c, _clock = _away_carrot()
+
+    def raising_generate(*, system, history, user):
+        raise RuntimeError("provider down")
+
+    c.llm.generate = raising_generate
+    _try_post_turn_follow_up(c, None, "what time is it?")
+    assert capsys.readouterr().out == ""
+
+
+def test_slash_commands_no_follow_up(monkeypatch, capsys):
+    c, _clock = _away_carrot()
+    _run_main_scripted(monkeypatch, ["/help", "/quit"], factory=lambda: c)
+    out = capsys.readouterr().out.strip().splitlines()
+    spoken = [line for line in out if line.startswith("carrot: ")]
+    # Only the session-start initiative speaks; /help adds no follow-up.
+    assert spoken == ["carrot: hey."]
+
+
+def test_normal_turn_follow_up_wiring(monkeypatch, capsys, tmp_path):
+    c, _clock = _away_carrot()
+    c.store = StateStore(str(tmp_path / "state.json"))
+    _run_main_scripted(monkeypatch, ["what time is it?", "/quit"],
+                       factory=lambda: c)
+    out = capsys.readouterr().out.strip().splitlines()
+    spoken = [line for line in out if line.startswith("carrot: ")]
+    # Session-start + first reply always; the follow-up adds at most one.
+    assert 2 <= len(spoken) <= 3

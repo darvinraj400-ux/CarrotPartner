@@ -20,6 +20,7 @@ from .companion import (
     list_companions,
     validate_name,
 )
+from .context import tokenize
 from .drives import drive_pull, update_rise
 from .environment import MockEnvironmentProbe
 from .initiative import ACTIVE_REASONS, should_initiate
@@ -588,6 +589,115 @@ def _try_session_start_initiative(carrot) -> None:
     print(f"carrot: {message}")
 
 
+_FOLLOW_UP_MIN_TOKENS = 4
+
+_FOLLOW_UP_SENTENCE = (
+    "You already replied to this person. If you have a small "
+    "additional thought \u2014 an observation, a joke, a brief "
+    "continuation \u2014 say it now, briefly. If nothing more is worth "
+    "saying, respond with exactly the text: `[silence]`."
+)
+
+
+def _should_follow_up(carrot, event, user_text: str) -> bool:
+    """
+    Permissive post-turn follow-up gate. Deterministic; uses only
+    existing state; no randomness, time, cooldowns, or new state.
+
+    Fires when any one of three signals holds:
+
+    1. The classified event is not "neutral" (a cue-rich turn:
+       compliment, insult, apology, joke, affection, repair,
+       achievement, return).
+    2. The user turn ends with "?" (a direct question — the
+       classifier deliberately maps plain questions to neutral, so
+       without this signal every question would stay silent).
+    3. The user turn carries more than 4 meaningful tokens
+       (tokenizer + stopword filtered, i.e. substantive turns).
+
+    Short neutral acknowledgments ("ok", "sounds good", "lol nice")
+    fail all three and stay silent. `carrot` is accepted for a stable
+    future signature; the current formula does not need it.
+    """
+    del carrot  # reserved: future phases may consult drives/mood here.
+    event_type = getattr(event, "type", "neutral") or "neutral"
+    if event_type != "neutral":
+        return True
+    text = str(user_text or "")
+    if text.strip().endswith("?"):
+        return True
+    return len(tokenize(text)) > _FOLLOW_UP_MIN_TOKENS
+
+
+def _follow_up_system_prompt(carrot) -> str:
+    """
+    System prompt for a post-turn follow-up message.
+
+    Personality sketch + voice block (same voice as normal turns) +
+    a neutral instruction: say more only if there is more worth
+    saying, otherwise answer `[silence]`. Never instructs the LLM
+    to ask a question or to keep the conversation going.
+    """
+    return (carrot.personality.sketch() + " " + _VOICE_BLOCK + " "
+            + _FOLLOW_UP_SENTENCE)
+
+
+def _attempt_follow_up(carrot, event, user_text: str) -> str | None:
+    """
+    One-shot post-turn follow-up attempt.
+
+    Calls `_should_follow_up`. If False, returns None immediately
+    (no LLM call).
+
+    If True, composes `_follow_up_system_prompt(carrot)`, calls the
+    LLM with the current conversation buffer as history and a short
+    neutral user prompt, and returns the message text.
+
+    Returns None on: gate not firing, LLM exception, empty output, or
+    sentinel `[silence]` output.
+
+    Never raises. Does not call process_turn, does not write to the
+    buffer, does not record any fire.
+
+    Preserves the Phase 1 seam: decision → compose → generate. Future
+    phases may refine the decision without touching the compose or
+    generate steps.
+    """
+    if not _should_follow_up(carrot, event, user_text):
+        return None
+    system = _follow_up_system_prompt(carrot)
+    try:
+        message = carrot.llm.generate(
+            system=system, history=carrot.buffer.history_for_llm(),
+            user="Anything further to add.",
+        )
+    except Exception:
+        return None
+    if message is None:
+        return None
+    text = str(message).strip()
+    if not text or text == "[silence]":
+        return None
+    return text
+
+
+def _try_post_turn_follow_up(carrot, event, user_text: str) -> None:
+    """
+    Post-turn follow-up for normal REPL turns.
+
+    Calls `_attempt_follow_up`. If a message is returned, prints it with
+    the same `carrot: ` prefix the REPL uses. Otherwise prints nothing.
+    Must never raise.
+    """
+    try:
+        message = _attempt_follow_up(carrot, event, user_text)
+    except Exception:
+        return
+    if message is None:
+        return
+    print(f"carrot: {message}")
+
+
 def _run_away_mode(carrot, max_n: int) -> None:
     """Bounded initiative actuation. Never calls process_turn, never writes
     to the conversation buffer. Each iteration loads drives read-only,
@@ -850,6 +960,7 @@ def main(argv=None) -> None:
         reply = carrot.process_turn(line)
         carrot.store.save(carrot.state)
         print(f"carrot: {reply}")
+        _try_post_turn_follow_up(carrot, carrot.last_event, line)
 
 
 if __name__ == "__main__":
