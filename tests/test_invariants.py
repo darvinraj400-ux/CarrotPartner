@@ -213,7 +213,10 @@ def test_generate_callers_restricted():
                         and called.attr == "generate":
                     if path.name not in ("carrot.py", "cli.py"):
                         offenders.append((path.name, func))
-                    elif path.name == "cli.py" and func != "_run_away_mode":
+                    # Phase 1 amendment: session-start initiative shares the single-shot
+                    # generation site with away mode via _attempt_initiative.
+                    elif path.name == "cli.py" and func not in (
+                            "_run_away_mode", "_attempt_initiative"):
                         offenders.append((path.name, func))
             for child in ast.iter_child_nodes(node):
                 stack.append((child, func))

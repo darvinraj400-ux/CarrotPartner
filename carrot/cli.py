@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from .avatar import launch_avatar
+from .carrot import _VOICE_BLOCK
 from .channel import (
     CHANNEL_EMPTY_MSG,
     Channel,
@@ -514,6 +515,79 @@ def _parse_companion_args(argv: list[str]) -> tuple[bool, str | None]:
     return (True, args[idx + 1])
 
 
+def _session_start_prompt(carrot, reason: str) -> str:
+    """
+    System prompt for a session-start initiative message.
+
+    Starts from the existing `_initiative_system_prompt` (sketch +
+    reason line + instruction to open naturally), then appends the
+    voice block so the initiative message speaks in the same voice as
+    normal turns.
+    """
+    return _initiative_system_prompt(carrot, reason) + " " + _VOICE_BLOCK
+
+
+def _attempt_initiative(carrot, now: float) -> str | None:
+    """
+    One-shot initiative attempt.
+
+    Loads current drives (with rise applied), loads initiative
+    cooldown state, calls `should_initiate`, and — if a reason fires —
+    composes the session-start prompt, calls the LLM, records the fire,
+    and returns the message text.
+
+    Returns None if no reason fires, or if the LLM produces empty text.
+    Never raises: LLM failures are caught and treated as no message
+    (the fire is not recorded, so the next launch retries).
+
+    Preserves the "trigger vs desire" seam: the decision to speak is
+    `should_initiate`; the composition is `_session_start_prompt` +
+    `llm.generate`. Future phases may insert a desire filter between
+    them without touching either.
+    """
+    elapsed = now - carrot.state.last_seen if carrot.state.last_seen else 0.0
+    drives = update_rise(carrot.drive_store.load(), elapsed,
+                         carrot.drives_config.rise_per_hour)
+    state = carrot.initiative_store.load()
+    decision = should_initiate(
+        drives, elapsed, carrot.last_environment,
+        state.per_reason_last_fire, now, carrot.initiative_config,
+    )
+    if decision is None:
+        return None
+    system = _session_start_prompt(carrot, decision.reason)
+    try:
+        message = carrot.llm.generate(
+            system=system, history=[], user="Speak first.",
+        )
+    except Exception:
+        return None
+    if not message or not str(message).strip():
+        return None
+    carrot.initiative_store.record_fire(decision.reason, now)
+    return str(message).strip()
+
+
+def _try_session_start_initiative(carrot) -> None:
+    """
+    One-shot session-start initiative for normal REPL launches.
+
+    Calls `_attempt_initiative` once. If a message is returned, prints
+    it with the same `carrot: ` prefix the REPL uses for replies.
+    Otherwise prints nothing.
+
+    Must never raise: session-start initiative must not break the
+    launch.
+    """
+    try:
+        message = _attempt_initiative(carrot, carrot._now())
+    except Exception:
+        return
+    if message is None:
+        return
+    print(f"carrot: {message}")
+
+
 def _run_away_mode(carrot, max_n: int) -> None:
     """Bounded initiative actuation. Never calls process_turn, never writes
     to the conversation buffer. Each iteration loads drives read-only,
@@ -521,25 +595,10 @@ def _run_away_mode(carrot, max_n: int) -> None:
     the fire. Terminates after at most max_n iterations or on the first
     None decision."""
     for _ in range(max_n):
-        now = carrot._now()
-        last_seen = carrot.state.last_seen
-        elapsed = (now - last_seen) if last_seen else 0.0
-        raw_drives = carrot.drive_store.load()
-        drives = update_rise(raw_drives, elapsed,
-                             carrot.drives_config.rise_per_hour)
-        state = carrot.initiative_store.load()
-        decision = should_initiate(
-            drives, elapsed, carrot.last_environment,
-            state.per_reason_last_fire, now, carrot.initiative_config,
-        )
-        if decision is None:
+        message = _attempt_initiative(carrot, carrot._now())
+        if message is None:
             break
-        system = _initiative_system_prompt(carrot, decision.reason)
-        message = carrot.llm.generate(
-            system=system, history=[], user="Open with a short greeting.",
-        )
         print(message)
-        carrot.initiative_store.record_fire(decision.reason, now)
 
 
 def run_voice_turn(
@@ -672,6 +731,7 @@ def main(argv=None) -> None:
             print(f"drained: {count}")
         return
     print("Carrot (slice 1) -- type /quit to exit, /dbg for inner state.")
+    _try_session_start_initiative(carrot)
     while True:
         try:
             line = input("you: ")

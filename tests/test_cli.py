@@ -1428,14 +1428,18 @@ def test_voice_dispatch_no_audio_device(monkeypatch, tmp_path):
 def test_voice_dispatch_empty_touches_no_llm(monkeypatch, tmp_path):
     from carrot.voice import MockSpeechRecognizer, MockSpeechSynthesizer
 
+    # Phase 1 amendment: launch-time session-start initiative may consume
+    # one LLM call before the REPL begins. The test measures whether the
+    # empty /voice command itself consumes an LLM call.
     c = _voice_carrot(tmp_path)
     monkeypatch.setattr("carrot.cli.MockSpeechRecognizer",
                         lambda: MockSpeechRecognizer([]))
     monkeypatch.setattr("carrot.cli.MockSpeechSynthesizer",
                         MockSpeechSynthesizer)
-    before = c.llm._counter
+    _run_main_scripted(monkeypatch, [], factory=lambda: c)
+    baseline = c.llm._counter
     _run_main_scripted(monkeypatch, ["/voice"], factory=lambda: c)
-    assert c.llm._counter == before
+    assert c.llm._counter == baseline
 
 
 def test_help_lists_voice():
@@ -2011,3 +2015,128 @@ def test_forget_episode_not_shadowed(monkeypatch, capsys):
 def test_help_lists_episodes():
     assert "/episodes" in HELP_TEXT
     assert "/forget-episode" in HELP_TEXT
+
+
+# --- Initiative Phase 1: session-start initiative ---
+
+
+def _session_lines(out):
+    return out.strip().splitlines()
+
+
+def test_session_start_fires_on_high_drives(monkeypatch, capsys):
+    c, _clock = _away_carrot(drive_social=0.9)
+    _run_main_scripted(monkeypatch, ["/quit"], factory=lambda: c)
+    out = _session_lines(capsys.readouterr().out)
+    assert out[0].startswith("Carrot (slice 1)")
+    assert out[1] == "carrot: hey."
+
+
+def test_session_start_skipped_when_cooled_down(monkeypatch, capsys):
+    # Fresh state always qualifies for session-open, so suppression
+    # requires seeded cooldowns — not merely fresh stores.
+    c, clock = _away_carrot()
+    for reason in ("long-absence", "high-social-drive", "session-open"):
+        c.initiative_store.record_fire(reason, clock())
+    _run_main_scripted(monkeypatch, ["/quit"], factory=lambda: c)
+    out = _session_lines(capsys.readouterr().out)
+    assert not [line for line in out if line.startswith("carrot: ")]
+
+
+def test_session_start_records_fire(monkeypatch, capsys):
+    c, _clock = _away_carrot()
+    _run_main_scripted(monkeypatch, ["/quit"], factory=lambda: c)
+    fired = dict(c.initiative_store.load().per_reason_last_fire)
+    assert fired == {"session-open": c._now()}
+    assert "carrot: hey." in capsys.readouterr().out
+
+
+def test_session_start_not_in_away_mode(monkeypatch, capsys, tmp_path):
+    c, _clock = _away_carrot()
+    monkeypatch.setattr("carrot.cli.build_carrot", lambda: c)
+    monkeypatch.setattr(
+        "builtins.input", lambda *a, **k: (_ for _ in ()).throw(EOFError))
+    from carrot.cli import main
+
+    main(["--away", "1"])
+    out = capsys.readouterr().out
+    assert "carrot: " not in out
+    assert "hey." in out
+
+
+def test_session_start_not_in_drain_mode(monkeypatch, capsys, tmp_path):
+    c, _clock = _away_carrot()
+    monkeypatch.setattr("carrot.cli.build_carrot", lambda: c)
+    monkeypatch.setattr(
+        "builtins.input", lambda *a, **k: (_ for _ in ()).throw(EOFError))
+    from carrot.cli import main
+
+    main(["--drain", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "carrot: " not in out
+    assert "(no messages)" in out
+
+
+def test_session_start_llm_failure_safe(monkeypatch, capsys):
+    c, _clock = _away_carrot()
+
+    def raising_generate(*, system, history, user):
+        raise RuntimeError("provider down")
+
+    c.llm.generate = raising_generate
+    _run_main_scripted(monkeypatch, ["/quit"], factory=lambda: c)
+    out = capsys.readouterr().out
+    assert "Carrot (slice 1)" in out
+    assert dict(c.initiative_store.load().per_reason_last_fire) == {}
+
+
+def test_session_start_empty_message_safe(monkeypatch, capsys):
+    c, _clock = _away_carrot()
+    c.llm.generate = lambda *, system, history, user: "   "
+    _run_main_scripted(monkeypatch, ["/quit"], factory=lambda: c)
+    out = capsys.readouterr().out
+    assert "Carrot (slice 1)" in out
+    assert dict(c.initiative_store.load().per_reason_last_fire) == {}
+
+
+def test_attempt_initiative_never_raises(tmp_path):
+    from carrot.cli import _attempt_initiative
+    from carrot.initiative import InitiativeStore
+    from carrot.memory import MemoryStore
+
+    c, clock = _away_carrot()
+    (tmp_path / "bad-init.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "bad-drives.json").write_text("\xff\xfe broken",
+                                              encoding="utf-8")
+    c.initiative_store = InitiativeStore(tmp_path / "bad-init.json",
+                                         time_fn=clock)
+    c.memory_store = MemoryStore(tmp_path / "m.json", time_fn=clock)
+    c.drive_store = DriveStore(tmp_path / "bad-drives.json",
+                               time_fn=clock)
+
+    def raising_generate(*, system, history, user):
+        raise RuntimeError("provider down")
+
+    c.llm.generate = raising_generate
+    assert _attempt_initiative(c, clock()) is None
+
+
+def test_session_start_prompt_includes_voice():
+    from carrot.carrot import _VOICE_BLOCK
+    from carrot.cli import _session_start_prompt
+
+    c, _clock = _away_carrot()
+    system = _session_start_prompt(c, "session-open")
+    assert "bullet points" in system
+    assert "bullet points" in _VOICE_BLOCK
+
+
+def test_session_start_no_process_turn(monkeypatch):
+    c, _clock = _away_carrot()
+    before_buffer = list(c.buffer.recent())
+    calls = []
+    monkeypatch.setattr(c, "process_turn",
+                        lambda *a, **k: calls.append((a, k)))
+    _run_main_scripted(monkeypatch, ["/quit"], factory=lambda: c)
+    assert calls == []
+    assert list(c.buffer.recent()) == before_buffer
