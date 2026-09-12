@@ -314,6 +314,32 @@ def _merge_tokens(
     return tuple(seen[-cap:])
 
 
+def _trim_to_cap(
+    episodes: Sequence[Episode],
+    cap: int,
+) -> tuple[Episode, ...]:
+    """
+    Return at most `cap` episodes, dropping the least-recently-active
+    (smallest last_seen_ts) first. Preserves original list order.
+
+    Pure; does not mutate input.
+    """
+    items = tuple(episodes or ())
+    if len(items) <= cap:
+        return items
+    # Identify which episodes to keep: the `cap` with the largest
+    # last_seen_ts.
+    keep_set = set()
+    ordered_by_recency = sorted(
+        range(len(items)),
+        key=lambda i: items[i].last_seen_ts,
+        reverse=True,
+    )
+    for i in ordered_by_recency[:cap]:
+        keep_set.add(i)
+    return tuple(e for i, e in enumerate(items) if i in keep_set)
+
+
 def derive(
     episodes: Sequence[Episode],
     turn_tokens: Sequence[str],
@@ -331,6 +357,9 @@ def derive(
       AND overlap(latest.topic_tokens, turn_tokens) >= 1:
         return episodes with latest replaced by an updated Episode.
     - Else: return episodes with a new Episode appended.
+    - The return value never exceeds config.max_episodes: on overflow
+      the least-recently-active episodes (smallest last_seen_ts) are
+      dropped, preserving original order.
 
     Pure: no I/O, no clock, no mutation of inputs.
     """
@@ -391,9 +420,11 @@ def derive(
             mood_label=mood_label,
             last_behavior=(last_behavior if last_behavior is not None
                            else latest.last_behavior))
-        return tuple(updated if i == best_idx else e
-                     for i, e in enumerate(items))
-    return tuple(items) + (_create(),)
+        return _trim_to_cap(tuple(updated if i == best_idx else e
+                                     for i, e in enumerate(items)),
+                            config.max_episodes)
+    return _trim_to_cap(tuple(items) + (_create(),),
+                        config.max_episodes)
 
 
 def _overlap_count(a: Sequence[str], b: Sequence[str]) -> int:

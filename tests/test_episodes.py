@@ -939,3 +939,83 @@ def test_process_turn_deterministic_episodes():
         second.process_turn(text)
     assert first.episode_store.load() == second.episode_store.load()
     assert first.last_episodes == second.last_episodes
+
+
+# --- Episodic Continuity Phase 1b: derive trims to cap ---
+
+
+def _full_eps(n, base_ts=1000.0):
+    return tuple(
+        _ep(first_seen_ts=base_ts + i, last_seen_ts=base_ts + i,
+            topic_tokens=("topic%d" % i,), turn_count=1)
+        for i in range(n))
+
+
+def test_derive_trims_to_cap_on_create():
+    cfg = EpisodesConfig(max_episodes=3)
+    eps = _full_eps(3)
+    out = derive(eps, ("brand", "new", "words"), 5000.0, "content",
+                 config=cfg)
+    assert len(out) == 3
+
+
+def test_derive_trims_to_cap_on_join():
+    cfg = EpisodesConfig(max_episodes=3)
+    eps = _full_eps(4, base_ts=4900.0)
+    out = derive(eps, ("topic3", "extra"), 5000.0, "content",
+                 config=cfg)
+    assert len(out) == 3
+    # Joined episode kept (newest last_seen_ts); stalest dropped.
+    assert max(e.last_seen_ts for e in out) == 5000.0
+    assert ("topic0",) not in [e.topic_tokens for e in out]
+
+
+def test_derive_trim_drops_stalest():
+    cfg = EpisodesConfig(max_episodes=3)
+    eps = _full_eps(3)
+    out = derive(eps, ("brand", "new", "words"), 5000.0, "content",
+                 config=cfg)
+    # Smallest last_seen_ts (topic0 @1000.0) dropped; the just-created
+    # episode (last_seen_ts 5000.0) is present.
+    assert [e.topic_tokens for e in out] == [
+        ("topic1",), ("topic2",), ("brand", "new", "words")]
+    assert max(e.last_seen_ts for e in out) == 5000.0
+
+
+def test_derive_preserves_order_after_trim():
+    cfg = EpisodesConfig(max_episodes=4)
+    eps = (_ep(first_seen_ts=1000.0, last_seen_ts=1000.0,
+               topic_tokens=("oldest",)),
+           _ep(first_seen_ts=2000.0, last_seen_ts=4000.0,
+               topic_tokens=("middle",)),
+           _ep(first_seen_ts=3000.0, last_seen_ts=3000.0,
+               topic_tokens=("newer",)),
+           _ep(first_seen_ts=3500.0, last_seen_ts=4500.0,
+               topic_tokens=("newest",)))
+    out = derive(eps, ("fresh", "words"), 5000.0, "content",
+                 config=cfg)
+    assert [e.topic_tokens for e in out] == [
+        ("middle",), ("newer",), ("newest",), ("fresh", "words")]
+
+
+def test_derive_no_trim_under_cap():
+    cfg = EpisodesConfig(max_episodes=5)
+    eps = _full_eps(2)
+    created = derive(eps, ("brand", "new"), 5000.0, "content",
+                     config=cfg)
+    assert [e.topic_tokens for e in created] == [
+        ("topic0",), ("topic1",), ("brand", "new")]
+    joined = derive(_full_eps(2, base_ts=4900.0), ("topic1",),
+                    5000.0, "content", config=cfg)
+    assert len(joined) == 2
+    assert joined[1].turn_count == 2
+
+
+def test_full_store_does_not_raise_on_derive(tmp_path):
+    cfg = EpisodesConfig()
+    eps = _full_eps(cfg.max_episodes)
+    out = derive(eps, ("brand", "new", "words"), 5000.0, "content",
+                 config=cfg)
+    store = EpisodeStore(tmp_path / "episodes.json")
+    store.save(out)  # must not raise ValueError: over episode cap
+    assert len(store.load()) == cfg.max_episodes
