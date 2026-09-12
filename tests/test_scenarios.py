@@ -45,7 +45,7 @@ class FakeTime:
 def make_carrot(personality=None, start=None, memory_store=None,
                 drive_store=None, permission_store=None,
                 initiative_store=None, relationship_store=None,
-                episode_store=None):
+                episode_store=None, world_text: str = ""):
     clock = start or FakeTime()
     llm = MockLLM()
     if memory_store is None:
@@ -115,6 +115,7 @@ def make_carrot(personality=None, start=None, memory_store=None,
         relationship_store=relationship_store,
         episode_store=episode_store,
         time_fn=clock,
+        world_text=world_text,
     )
     llm._behavior_getter = lambda: carrot.last_behavior
     carrot.clock = clock

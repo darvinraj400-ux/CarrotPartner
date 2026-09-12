@@ -395,7 +395,7 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None,
                  companion: str = DEFAULT_COMPANION):
     from .appraisal import Appraisal
     from .behavior import BehaviorSelector
-    from .carrot import Carrot
+    from .carrot import Carrot, _DEFAULT_WORLD_PATH
     from .classifier import DeterministicClassifier
     from .conversation import ConversationBuffer
     from .emotions import EmotionState
@@ -416,6 +416,10 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None,
         state.first_seen_ts = (time_fn or time.time)()
     store.save(state)
     personality = Personality.load(str(paths["personality_json"]))
+    try:
+        world_text = _DEFAULT_WORLD_PATH.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        world_text = ""
     environment_config = EnvironmentConfig.load(
         str(paths["environment_json"]))
     episodes_config = EpisodesConfig.load(
@@ -443,6 +447,7 @@ def build_carrot(llm=None, time_fn=None, environment_probe=None,
         episode_store=episode_store,
         episodes_config=episodes_config,
         companion=companion,
+        world_text=world_text,
     )
     if isinstance(carrot.llm, MockLLM) and carrot.llm._behavior_getter is None:
         carrot.llm._behavior_getter = lambda: carrot.last_behavior

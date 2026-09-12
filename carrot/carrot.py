@@ -151,6 +151,8 @@ _DEFAULT_EPISODES_STORE_PATH = (
     Path(__file__).resolve().parents[1] / "state" / "episodes.json")
 _DEFAULT_EPISODES_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "episodes.json")
+_DEFAULT_WORLD_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "world.md")
 
 
 def _has_cue(lowered_text: str, cues) -> bool:
@@ -207,6 +209,34 @@ def _mood_block(mood: str | None) -> str:
     return ' Feeling: "' + str(mood) + '"'
 
 
+_WORLD_PREAMBLE = (
+    "You have a life outside this conversation — a place you live, "
+    "things you care about, opinions that are yours. Stay in that life. "
+    "When the user asks about you, answer from your life. Do not "
+    "volunteer that you are code or an AI in ordinary conversation; "
+    "if the user directly asks what you are, answer honestly."
+)
+
+
+def _world_block(world_text: str) -> str:
+    """
+    Render the World block, or "" if no world is configured.
+
+    The preamble instructs the LLM how to use the world content.
+    The user-authored world text follows verbatim, wrapped in double
+    quotes — the same exemption the memories block uses, so the
+    skeleton scan (which strips quoted spans) treats world content
+    as user content, not skeleton.
+
+    Skeleton-safe: the preamble itself contains no digits, no state
+    nouns, and no banned permission words.
+    """
+    if not world_text or not world_text.strip():
+        return ""
+    return (" World: " + _WORLD_PREAMBLE + ' "'
+            + world_text.strip() + '"')
+
+
 def _context_hint(context: ConversationContext, user_text: str,
                    drive_pull=None, environment=None,
                    boost_effect: bool = False,
@@ -260,8 +290,9 @@ class Carrot:
                  tools_config=None, permission_store=None,
                  initiative_config=None, initiative_store=None,
                  relationship_config=None, relationship_store=None,
-                 episode_store=None, episodes_config=None,
-                 time_fn=None, companion: str = DEFAULT_COMPANION):
+                  episode_store=None, episodes_config=None,
+                  time_fn=None, companion: str = DEFAULT_COMPANION,
+                  world_text: str = ""):
         self.state = state
         self.personality = personality
         self.classifier = classifier
@@ -344,6 +375,9 @@ class Carrot:
         # Informational only: names which companion this instance is.
         # Used by the CLI to resolve per-companion paths; no behavior.
         self.companion = str(companion or DEFAULT_COMPANION)
+        # Fictional character context, passed in as a string (loaded by
+        # build_carrot). No file I/O here. Empty means "no world".
+        self.world_text = str(world_text or "")
 
     def _system_prompt(self, behavior: Behavior,
                          context: ConversationContext,
@@ -353,7 +387,8 @@ class Carrot:
                          boost_effect: bool = False,
                          relationship_band: str | None = None,
                          episodes: Sequence[Episode] = (),
-                         mood: str | None = None) -> str:
+                         mood: str | None = None,
+                         world_text: str = "") -> str:
         degree = _BAND_WORDS.get(behavior.band, "a little")
         base = (
             f"{self.personality.sketch()} "
@@ -367,12 +402,13 @@ class Carrot:
         memories = _memories_block(recalled)
         episode_block = _episodes_block(episodes)
         mood_signal = _mood_block(mood)
+        world_signal = _world_block(world_text)
         context_hint = _context_hint(context, user_text, drive_pull,
                                       environment,
                                       boost_effect=boost_effect,
                                       relationship_band=relationship_band)
-        return (base + " " + _VOICE_BLOCK + mood_signal + tools + memories
-                + episode_block + context_hint)
+        return (base + " " + _VOICE_BLOCK + world_signal + mood_signal
+                + tools + memories + episode_block + context_hint)
 
     @staticmethod
     def _initial_importance(cand, user_text: str) -> float:
@@ -543,8 +579,9 @@ class Carrot:
                                      boost_effect=self.last_boost_effect,
                                      relationship_band=(
                                          self.last_relationship_band),
-                                     episodes=self.last_episodes,
-                                     mood=self.state.mood)
+                                      episodes=self.last_episodes,
+                                      mood=self.state.mood,
+                                      world_text=self.world_text)
         history = self.buffer.history_for_llm()
         user_str = str(text)
         reply = self.llm.generate(system=system, history=history,

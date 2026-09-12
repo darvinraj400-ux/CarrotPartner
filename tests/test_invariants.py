@@ -10,8 +10,9 @@ import pytest
 from tests.conftest import ROOT
 from tests.test_scenarios import make_carrot
 from carrot.carrot import (_FUSION_SENTENCE, _RELATIONSHIP_HIGH_SENTENCE,
-                             _TOOLS_BLOCK, _VOICE_BLOCK, _context_hint,
-                             _episodes_block, _mood_block)
+                             _TOOLS_BLOCK, _VOICE_BLOCK, _WORLD_PREAMBLE,
+                             _context_hint, _episodes_block, _mood_block,
+                             _world_block)
 from carrot.behavior import Behavior
 from carrot.context import ConversationContext
 from carrot.drives import DriveState, DriveStore
@@ -2139,3 +2140,70 @@ def test_carriage_sentence_static():
 
 def test_voice_block_no_forced_question_present():
     assert "keep the conversation moving" in _VOICE_BLOCK
+
+
+# --- World slice Phase 1: World block ---
+
+
+def test_world_block_empty_returns_empty():
+    assert _world_block("") == ""
+    assert _world_block("   ") == ""
+
+
+def test_world_block_renders_preamble_and_content():
+    rendered = _world_block("Test world content.")
+    assert rendered.startswith(" World: ")
+    assert "You have a life outside this conversation" in rendered
+    assert "Test world content." in rendered
+
+
+def test_world_block_skeleton_clean_preamble():
+    rendered = _world_block("A quiet street with a bakery.")
+    stripped = _skeleton(rendered)
+    assert re.search(r"\d", stripped) is None
+    lowered = stripped.lower()
+    for word in _STATE_NAMES:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+    for word in _BANNED_PERMISSION_WORDS:
+        assert re.search(rf"\b{word}\b", lowered) is None, word
+
+
+def test_world_block_quotes_user_content():
+    rendered = _world_block("Lives above a bakery. 24 years old.")
+    assert rendered.endswith('"Lives above a bakery. 24 years old."')
+    # Digits inside the quoted span are exempt from the skeleton scan.
+    assert re.search(r"\d", _skeleton(rendered)) is None
+
+
+def test_world_block_absent_when_empty():
+    c = make_carrot()
+    c.process_turn("hello there")
+    assert " World: " not in c.llm.last_system
+
+
+def test_world_block_present_when_set():
+    c = make_carrot(world_text="Test world content.")
+    c.process_turn("hello there")
+    assert " World: " in c.llm.last_system
+    assert "Test world content." in c.llm.last_system
+
+
+def test_world_block_position():
+    c = make_carrot(world_text="Test world content.")
+    ctx = ConversationContext()
+    system = c._system_prompt(Behavior("normal", "low"), ctx,
+                              "tell me more", (), None, EMPTY_SNAPSHOT,
+                              False, None, (), "tender",
+                              "Test world content.")
+    voice_idx = system.index(_VOICE_BLOCK)
+    world_idx = system.index(" World: ")
+    mood_idx = system.index(' Feeling: "')
+    assert voice_idx < world_idx < mood_idx
+
+
+def test_world_block_byte_identity_when_empty():
+    first = make_carrot()
+    first.process_turn("hello there")
+    second = make_carrot(world_text="")
+    second.process_turn("hello there")
+    assert first.llm.last_system == second.llm.last_system

@@ -2293,3 +2293,21 @@ def test_normal_turn_follow_up_wiring(monkeypatch, capsys, tmp_path):
     spoken = [line for line in out if line.startswith("carrot: ")]
     # Session-start + first reply always; the follow-up adds at most one.
     assert 2 <= len(spoken) <= 3
+
+
+# --- World slice Phase 1: world file loading ---
+
+
+def test_build_carrot_loads_world_file(monkeypatch, tmp_path):
+    world_file = tmp_path / "world.md"
+    world_file.write_text("A test life, verbatim.", encoding="utf-8")
+    monkeypatch.setattr("carrot.carrot._DEFAULT_WORLD_PATH", world_file)
+    c = build_carrot(environment_probe=MockEnvironmentProbe())
+    assert c.world_text == "A test life, verbatim."
+
+
+def test_build_carrot_missing_world_file(monkeypatch, tmp_path):
+    monkeypatch.setattr("carrot.carrot._DEFAULT_WORLD_PATH",
+                        tmp_path / "no-such-world.md")
+    c = build_carrot(environment_probe=MockEnvironmentProbe())
+    assert c.world_text == ""
