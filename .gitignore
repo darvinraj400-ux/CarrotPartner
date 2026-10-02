@@ -2,3 +2,8 @@ state/
 __pycache__/
 .pytest_cache/
 *.pyc
+.env
+.env.*
+session.json
+token.txt
+config.txt
